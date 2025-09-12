@@ -12,11 +12,10 @@ class ChatWindow(QWidget):
     聊天窗口类
     """
     def __init__(self, own_username, target_user_info, target_ip, network_core, main_window):
-        # --- 关键修复 1: 调用 super().__init__() 时不传递父对象 ---
-        # 这会强制Qt将此控件创建一个独立的、顶级的窗口，而不是子控件。
         super().__init__()
         
-        # 我们仍然保存对主窗口的引用，以便将来调用它的功能（例如截图时隐藏它）
+        self.setWindowFlags(self.windowFlags() | Qt.Window)
+        
         self.main_window = main_window
         
         self.own_username = own_username
@@ -25,7 +24,7 @@ class ChatWindow(QWidget):
         self.network_core = network_core
         self.screenshot_tool = None
         
-        self.emoji_manager = EmojiManager()
+        self.emoji_manager = EmojiManager(parent=self)
         
         self.setWindowTitle(f"与 {self.target_user_info['sender']} 聊天中")
         self.setGeometry(300, 300, 500, 400)
@@ -38,26 +37,25 @@ class ChatWindow(QWidget):
         """
         layout = QVBoxLayout(self)
         
-        # 消息显示区域
         self.message_display = QTextBrowser()
-        self.message_display.setOpenExternalLinks(False) # 自己处理链接点击
+        self.message_display.setOpenExternalLinks(False)
         self.message_display.anchorClicked.connect(self.handle_link_clicked)
-        # 将emoji渲染器关联到QTextBrowser的document
+        
+        # --- 关键修复：将message_display传递给emoji_manager ---
+        # 这样manager就知道当动画帧改变时应该更新哪一个控件
+        self.emoji_manager.set_target_widget(self.message_display)
+        
         self.emoji_manager.render_emojis("", self.message_display.document())
 
-
-        # 功能工具栏
         toolbar = QToolBar()
         self.emoji_button = QPushButton("表情")
         self.screenshot_button = QPushButton("截图")
         toolbar.addWidget(self.emoji_button)
         toolbar.addWidget(self.screenshot_button)
 
-        # 消息输入区域
         self.message_input = QTextEdit()
         self.message_input.setFixedHeight(100)
         
-        # 发送按钮区域
         button_layout = QHBoxLayout()
         close_button = QPushButton("关闭")
         send_button = QPushButton("发送")
@@ -65,13 +63,11 @@ class ChatWindow(QWidget):
         button_layout.addWidget(close_button)
         button_layout.addWidget(send_button)
         
-        # 组装布局
         layout.addWidget(self.message_display)
         layout.addWidget(toolbar)
         layout.addWidget(self.message_input)
         layout.addLayout(button_layout)
         
-        # --- 连接信号与槽 ---
         send_button.clicked.connect(self.send_message)
         close_button.clicked.connect(self.close)
         self.emoji_button.clicked.connect(self.open_emoji_picker)
@@ -81,18 +77,14 @@ class ChatWindow(QWidget):
         """
         格式化文本，将纯文本中的emoji代码转换为HTML的<img>标签
         """
-        # HTML转义，防止消息内容被当作HTML解析
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         def replace_emoji(match):
             code = match.group(0)
-            # 使用前面注册的 "emoji://" 协议
             return f'<img src="emoji://{code}" />'
 
-        # 使用正则表达式匹配如 `[01]` `[123]` 这样的代码
         formatted_text = re.sub(r'\[\d+\]', replace_emoji, text)
         return formatted_text.replace("\n", "<br>")
-
 
     @pyqtSlot()
     def send_message(self):
@@ -118,10 +110,9 @@ class ChatWindow(QWidget):
         
         self.message_display.append(header)
         
-        # 插入格式化后的消息内容
         formatted_content = self.format_text_for_display(text)
         self.message_display.insertHtml(formatted_content)
-        self.message_display.append("") # 添加一个空行以分隔消息
+        self.message_display.append("")
 
         self.message_display.ensureCursorVisible()
 
@@ -136,18 +127,14 @@ class ChatWindow(QWidget):
             
         self.message_display.append(header)
         
-        # 将本地文件路径转换为URL格式
         image_url = QUrl.fromLocalFile(os.path.abspath(image_path))
         cursor = self.message_display.textCursor()
         image_format = QTextImageFormat()
         image_format.setName(image_url.toString())
-        # 可以设置图片大小
-        # image_format.setWidth(200)
         cursor.insertImage(image_format)
         
         self.message_display.append("")
         self.message_display.ensureCursorVisible()
-
 
     @pyqtSlot()
     def open_emoji_picker(self):
@@ -156,7 +143,6 @@ class ChatWindow(QWidget):
         """
         picker = EmojiPicker(self.emoji_manager, self)
         picker.emoji_selected.connect(self.insert_emoji_code)
-        # 将选择器定位在按钮旁边
         button_pos = self.emoji_button.mapToGlobal(self.emoji_button.pos())
         picker.move(button_pos.x() - picker.width(), button_pos.y() - picker.height())
         picker.exec_()
@@ -173,8 +159,6 @@ class ChatWindow(QWidget):
         """
         开始截图
         """
-        # --- 关键修复 2: 使用 self.main_window 引用来隐藏主窗口 ---
-        # 因为我们不再是子控件，self.parent() 会是 None。
         self.main_window.hide()
         self.hide()
         
@@ -187,21 +171,16 @@ class ChatWindow(QWidget):
         """
         处理截图完成后的信号
         """
-        # 恢复窗口显示
         self.show()
         self.main_window.show()
         self.activateWindow()
 
-        # 在本地显示截图
         self.append_image(image_path, self.own_username, is_own=True)
         
-        # TODO: 发送截图文件
-        # 目前，我们只发送一个文本通知，因为文件传输需要更复杂的TCP协议
         message_to_send = f"[截图: {os.path.basename(image_path)}]"
         self.network_core.send_message(message_to_send, self.target_ip)
         
-        self.screenshot_tool = None # 清理引用
-
+        self.screenshot_tool = None
 
     def handle_link_clicked(self, url):
         """
@@ -209,8 +188,11 @@ class ChatWindow(QWidget):
         """
         if url.scheme() == 'file':
             QDesktopServices.openUrl(url)
-        # 其他协议可以继续在这里添加处理
 
     def closeEvent(self, event):
         print(f"关闭与 {self.target_ip} 的聊天窗口")
-        event.accept()
+        # 从主窗口的字典中移除自己
+        if self.target_ip in self.main_window.chat_windows:
+            del self.main_window.chat_windows[self.target_ip]
+        super().closeEvent(event)
+
