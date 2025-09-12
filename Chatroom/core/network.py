@@ -13,10 +13,11 @@ class NetworkCore(QThread):
     user_online = pyqtSignal(dict, str)      # 用户信息, IP
     user_offline = pyqtSignal(dict, str)     # 用户信息, IP
 
-    def __init__(self, username, hostname, port=protocol.IPMSG_DEFAULT_PORT):
+    def __init__(self, username, hostname, groupname="我的好友", port=protocol.IPMSG_DEFAULT_PORT):
         super().__init__()
         self.username = username
         self.hostname = hostname
+        self.groupname = groupname
         self.port = port
         self.running = True
         
@@ -70,6 +71,12 @@ class NetworkCore(QThread):
         command = msg['command']
         mode = command & protocol.IPMSG_MODE_MASK
 
+        # 从 extra_msg 中解析显示名称和组名，使用空字符 '\0' 分隔
+        extra_parts = msg['extra_msg'].split('\0', 1)
+        msg['display_name'] = extra_parts[0]
+        # 如果没有分组信息，则提供一个默认值
+        msg['group_name'] = extra_parts[1] if len(extra_parts) > 1 and extra_parts[1] else "我的好友"
+
         print(f"收到来自 {addr[0]} 的消息: {msg}")
 
         # 根据不同命令触发不同信号
@@ -98,35 +105,38 @@ class NetworkCore(QThread):
         """
         return int(time.time())
 
-    def _send_udp_message(self, command, extra_msg, dest_ip, dest_port=protocol.IPMSG_DEFAULT_PORT):
+    def _send_udp_message(self, command, extra_msg_payload, dest_ip, dest_port=protocol.IPMSG_DEFAULT_PORT):
         """
         发送UDP消息的内部函数
         """
         packet_no = self.get_packet_no()
         message = protocol.format_message(
-            packet_no, self.username, self.hostname, command, extra_msg
+            packet_no, self.username, self.hostname, command, extra_msg_payload
         )
         self.udp_socket.sendto(message, (dest_ip, dest_port))
 
     def broadcast_entry(self):
         """
-        广播上线消息
+        广播上线消息, 包含用户名和组名, 用 '\0' 分隔
         """
         print("广播上线消息...")
-        self._send_udp_message(protocol.IPMSG_BR_ENTRY, self.username, '<broadcast>')
+        payload = f"{self.username}\0{self.groupname}"
+        self._send_udp_message(protocol.IPMSG_BR_ENTRY, payload, '<broadcast>')
         
     def answer_entry(self, dest_ip, dest_port):
         """
-        回应上线消息
+        回应上线消息, 包含用户名和组名, 用 '\0' 分隔
         """
         print(f"向 {dest_ip} 回应上线状态...")
-        self._send_udp_message(protocol.IPMSG_ANSENTRY, self.username, dest_ip, dest_port)
+        payload = f"{self.username}\0{self.groupname}"
+        self._send_udp_message(protocol.IPMSG_ANSENTRY, payload, dest_ip, dest_port)
 
     def broadcast_exit(self):
         """
         广播下线消息
         """
         print("广播下线消息...")
+        # 下线消息的附加信息仅为用户名
         self._send_udp_message(protocol.IPMSG_BR_EXIT, self.username, '<broadcast>')
         
     def send_message(self, message_text, dest_ip, dest_port=protocol.IPMSG_DEFAULT_PORT):
@@ -141,3 +151,4 @@ class NetworkCore(QThread):
         发送消息收到的回执
         """
         self._send_udp_message(protocol.IPMSG_RECVMSG, str(packet_no_to_confirm), dest_ip, dest_port)
+
