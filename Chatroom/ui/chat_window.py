@@ -1,11 +1,13 @@
 import os
 import re
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextBrowser, QTextEdit, QPushButton, QToolBar
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QToolBar
 from PyQt5.QtCore import pyqtSlot, Qt, QUrl
 from PyQt5.QtGui import QDesktopServices, QTextCursor, QTextImageFormat
 from utils.emoji_manager import EmojiManager
 from ui.components.emoji_picker import EmojiPicker
 from ui.components.screenshot_tool import ScreenshotTool
+# --- 步骤 1: 导入我们新的自定义浏览器 ---
+from ui.components.animated_text_browser import AnimatedTextBrowser
 
 class ChatWindow(QWidget):
     """
@@ -24,7 +26,8 @@ class ChatWindow(QWidget):
         self.network_core = network_core
         self.screenshot_tool = None
         
-        self.emoji_manager = EmojiManager(parent=self)
+        # EmojiManager现在只是一个简单的数据提供者
+        self.emoji_manager = EmojiManager()
         
         self.setWindowTitle(f"与 {self.target_user_info['sender']} 聊天中")
         self.setGeometry(300, 300, 500, 400)
@@ -37,15 +40,15 @@ class ChatWindow(QWidget):
         """
         layout = QVBoxLayout(self)
         
-        self.message_display = QTextBrowser()
+        # --- 步骤 2: 使用我们自己的 AnimatedTextBrowser ---
+        # 它天生就知道如何处理表情动画
+        self.message_display = AnimatedTextBrowser(self)
         self.message_display.setOpenExternalLinks(False)
         self.message_display.anchorClicked.connect(self.handle_link_clicked)
         
-        # --- 关键修复：将message_display传递给emoji_manager ---
-        # 这样manager就知道当动画帧改变时应该更新哪一个控件
-        self.emoji_manager.set_target_widget(self.message_display)
-        
-        self.emoji_manager.render_emojis("", self.message_display.document())
+        # --- 步骤 3: 不再需要下面这些复杂的设置 ---
+        # self.emoji_manager.set_target_widget(self.message_display)
+        # self.emoji_manager.render_emojis("", self.message_display.document())
 
         toolbar = QToolBar()
         self.emoji_button = QPushButton("表情")
@@ -81,6 +84,7 @@ class ChatWindow(QWidget):
 
         def replace_emoji(match):
             code = match.group(0)
+            # 使用标准的 emoji:// 协议头
             return f'<img src="emoji://{code}" />'
 
         formatted_text = re.sub(r'\[\d+\]', replace_emoji, text)
