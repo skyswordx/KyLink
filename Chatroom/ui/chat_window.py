@@ -95,7 +95,6 @@ class ChatWindow(FramelessWindow):
             scroll_bar_handle = "rgb(220, 220, 220)"
             scroll_bar_handle_hover = "rgb(180, 180, 180)"
 
-        # --- 修正點：移除 FluentStyleSheet.SCROLL_BAR.apply(...) 並使用手動編寫的樣式表 ---
         style_sheet = f"""
             #ChatAreaWidget {{
                 background-color: {window_bg};
@@ -106,8 +105,6 @@ class ChatWindow(FramelessWindow):
                 border: none;
                 border-radius: 5px;
             }}
-
-            /* --- 以下是手動編寫的捲動軸樣式 --- */
             QScrollBar:vertical {{
                 border: none;
                 background: {scroll_bar_bg};
@@ -129,9 +126,7 @@ class ChatWindow(FramelessWindow):
             }}
         """
         self.chat_area_widget.setObjectName("ChatAreaWidget")
-        self.setStyleSheet(style_sheet) # 將樣式應用於整個視窗，子元件會繼承
-
-    # ... (後續所有其他函式保持不變) ...
+        self.setStyleSheet(style_sheet)
 
     def format_text_for_display(self, text):
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -143,8 +138,8 @@ class ChatWindow(FramelessWindow):
 
     @pyqtSlot()
     def send_message(self):
-        message_text = self.message_input.toPlainText()
-        if not message_text.strip(): return
+        message_text = self.message_input.toPlainText().strip()
+        if not message_text: return
         self.append_message(message_text, self.own_username, is_own=True)
         self.network_core.send_message(message_text, self.target_ip)
         self.message_input.clear()
