@@ -1,17 +1,24 @@
 import os
 import re
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QToolBar
-from PyQt5.QtCore import pyqtSlot, Qt, QUrl
+import time
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QToolBar, QMessageBox
+from PyQt5.QtCore import pyqtSlot, Qt, QUrl, pyqtSignal # Added pyqtSignal here
 from PyQt5.QtGui import QDesktopServices, QTextCursor, QTextImageFormat
 from utils.emoji_manager import EmojiManager
 from ui.components.emoji_picker import EmojiPicker
 from ui.components.screenshot_tool import ScreenshotTool
 from ui.components.animated_text_browser import AnimatedTextBrowser
+from core.file_transfer import FileSender, FileReceiver # 导入文件传输类
 
 class ChatWindow(QWidget):
     """
     聊天窗口類
     """
+    # 信号：(目标IP, 文件路径)
+    send_file_request = pyqtSignal(str, str)
+    # 信号：(TCP端口, 包ID, 目标IP)
+    send_file_ready = pyqtSignal(int, int, str)
+
     def __init__(self, own_username, target_user_info, target_ip, network_core, main_window):
         super().__init__()
         
@@ -25,6 +32,9 @@ class ChatWindow(QWidget):
         self.screenshot_tool = None
         self.emoji_manager = EmojiManager()
         
+        # 存储待发送的文件信息 {packet_no: filepath}
+        self.pending_files = {}
+
         self.setWindowTitle(f"與 {self.target_user_info['sender']} 聊天中")
         self.setGeometry(300, 300, 500, 400)
         
@@ -81,10 +91,7 @@ class ChatWindow(QWidget):
             sender_html = f'<p style="color: blue; margin-bottom: 0;"><b>{sender_name}:</b></p>'
         content_html = self.format_text_for_display(text)
         full_html = f'{sender_html}<div style="margin-left: 10px;">{content_html}</div>'
-        
-        # 增加的除錯輸出
         print(f"[append_message] 正在向聊天視窗新增以下 HTML: {full_html}")
-        
         self.message_display.append(full_html)
 
     def append_image(self, image_path, sender_name, is_own=False):
@@ -127,9 +134,49 @@ class ChatWindow(QWidget):
         self.main_window.show()
         self.activateWindow()
         self.append_image(image_path, self.own_username, is_own=True)
-        message_to_send = f"[截圖: {os.path.basename(image_path)}]"
-        self.network_core.send_message(message_to_send, self.target_ip)
-        self.screenshot_tool = None
+        
+        # --- 修改：不再发送文字，而是触发文件发送请求 ---
+        self.send_file_request.emit(self.target_ip, image_path)
+
+    # --- 新增：处理文件请求和响应 ---
+    @pyqtSlot(dict, str)
+    def handle_file_request(self, msg, sender_ip):
+        """处理收到的文件传输请求"""
+        parts = msg['extra_msg'].split(':')
+        filename, filesize = parts[0], parts[1]
+        
+        reply = QMessageBox.question(self, '文件傳輸請求', 
+            f"用戶 {self.target_user_info['sender']} ({sender_ip}) 想傳送檔案:\n"
+            f"名稱: {filename}\n"
+            f"大小: {filesize} bytes\n\n您是否同意接收？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.Yes:
+            self.receiver_thread = FileReceiver("cache", filename, filesize)
+            # 连接信号，当接收线程准备好后，发送UDP就绪信号
+            self.receiver_thread.ready_to_receive.connect(
+                lambda port, save_path: self.send_file_ready.emit(port, msg['packet_no'], sender_ip)
+            )
+            # 文件接收完成后，在界面上显示图片
+            self.receiver_thread.transfer_finished.connect(
+                lambda path: self.append_image(path, self.target_user_info['sender'], is_own=False)
+            )
+            self.receiver_thread.start()
+
+    @pyqtSlot(dict, str)
+    def handle_file_ready(self, msg, sender_ip):
+        """处理对方已准备好接收文件的信号"""
+        parts = msg['extra_msg'].split(':')
+        tcp_port, original_packet_no = parts[0], int(parts[1])
+        
+        # 从待发送文件列表中找到对应的文件路径
+        filepath = self.pending_files.get(original_packet_no)
+        if filepath:
+            print(f"對方已準備就緒，開始透過TCP傳送檔案 {filepath} 到 {sender_ip}:{tcp_port}")
+            self.sender_thread = FileSender(sender_ip, tcp_port, filepath)
+            self.sender_thread.start()
+            # 可以在这里连接 finished 和 error 信号来更新UI
+            self.pending_files.pop(original_packet_no) # 发送后从列表中移除
 
     def handle_link_clicked(self, url):
         if url.scheme() == 'file':

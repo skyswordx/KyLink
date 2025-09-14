@@ -1,4 +1,5 @@
 import socket
+import os
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QTreeWidget, 
                              QTreeWidgetItem, QPushButton, QLineEdit, QLabel, 
                              QHBoxLayout, QMessageBox)
@@ -54,10 +55,11 @@ class MainWindow(QMainWindow):
         self.network_thread.user_offline.connect(self.handle_user_offline)
         self.network_thread.message_received.connect(self.handle_message_received)
         
-        # --- 关键修复：添加下面这行代码 ---
-        self.user_tree_widget.itemDoubleClicked.connect(self.open_chat_window_from_tree)
-        # ------------------------------------
+        # --- 新增：连接文件传输信号 ---
+        self.network_thread.file_request_received.connect(self.handle_file_request_route)
+        self.network_thread.file_receiver_ready.connect(self.handle_file_ready_route)
 
+        self.user_tree_widget.itemDoubleClicked.connect(self.open_chat_window_from_tree)
         self.search_input.textChanged.connect(self.filter_user_list)
         self.group_message_button.clicked.connect(self.open_group_chat_dialog)
 
@@ -130,7 +132,6 @@ class MainWindow(QMainWindow):
             print(f"用户下线: {self.users[ip]['display_name']} @ {ip}")
             if ip in self.chat_windows:
                 self.chat_windows[ip].close()
-                del self.chat_windows[ip]
             del self.users[ip]
             self.update_user_list()
             
@@ -146,10 +147,24 @@ class MainWindow(QMainWindow):
             self.chat_windows[ip].append_message(msg['extra_msg'], sender_name)
             self.chat_windows[ip].activateWindow()
 
+    # --- 新增：文件传输信号路由 ---
+    @pyqtSlot(dict, str)
+    def handle_file_request_route(self, msg, sender_ip):
+        """将文件请求路由到对应的聊天窗口"""
+        if sender_ip not in self.chat_windows or not self.chat_windows[sender_ip].isVisible():
+            self.open_chat_window(sender_ip)
+        
+        if sender_ip in self.chat_windows:
+            self.chat_windows[sender_ip].activateWindow()
+            self.chat_windows[sender_ip].handle_file_request(msg, sender_ip)
+
+    @pyqtSlot(dict, str)
+    def handle_file_ready_route(self, msg, sender_ip):
+        """将对方准备就绪的信号路由回发起请求的聊天窗口"""
+        if sender_ip in self.chat_windows:
+            self.chat_windows[sender_ip].handle_file_ready(msg, sender_ip)
+
     def open_chat_window(self, target_ip):
-        """
-        打开或激活一个聊天窗口 (增加调试信息)
-        """
         print(f"[调试] ==> 'open_chat_window' 函数被调用, 目标IP: {target_ip}")
 
         if target_ip not in self.users:
@@ -168,18 +183,39 @@ class MainWindow(QMainWindow):
             
             chat_win = ChatWindow(self.username, target_user_info, target_ip, self.network_thread, self)
             
-            # 使用 lambda 简化连接
-            chat_win.destroyed.connect(lambda: self.chat_windows.pop(target_ip, None))
+            # --- 关键：连接聊天窗口发出的文件传输信号到NetworkCore ---
+            chat_win.send_file_request.connect(self.on_send_file_request)
+            chat_win.send_file_ready.connect(
+                lambda port, p_no, ip: self.network_thread.send_file_ready_signal(port, p_no, ip)
+            )
 
+            chat_win.destroyed.connect(lambda: self.chat_windows.pop(target_ip, None))
             self.chat_windows[target_ip] = chat_win
             chat_win.show()
             print(f"[调试] 新的聊天窗口应该已经显示。")
 
+    # --- 新增：处理聊天窗口发出的文件请求 ---
+    @pyqtSlot(str, str)
+    def on_send_file_request(self, target_ip, filepath):
+        """当聊天窗口要发送文件时被调用"""
+        try:
+            filesize = os.path.getsize(filepath)
+            filename = os.path.basename(filepath)
+            
+            # 让network_core发送UDP请求
+            self.network_thread.send_file_request(filename, filesize, target_ip)
+            
+            # 将文件信息存入对应聊天窗口的待发送列表
+            if target_ip in self.chat_windows:
+                packet_no = self.network_thread.get_packet_no() # 使用即将生成的包ID作为键
+                self.chat_windows[target_ip].pending_files[packet_no] = filepath
+                print(f"已暂存待发送文件: {filepath} (包ID: {packet_no})")
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"无法发送文件请求: {e}")
+
     @pyqtSlot(QTreeWidgetItem, int)
     def open_chat_window_from_tree(self, item, column):
-        """
-        从用户列表中双击打开聊天窗口的槽函数 (增加调试信息)
-        """
         print("[调试] ==> 检测到列表项双击事件！")
         item_data = item.data(0, Qt.UserRole)
         print(f"[调试] 被双击项的数据是: {item_data}")

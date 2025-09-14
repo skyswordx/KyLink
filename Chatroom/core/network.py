@@ -8,10 +8,15 @@ class NetworkCore(QThread):
     网络核心线程，处理所有UDP/TCP通信
     """
     # 定义信号
-    # pyqtSignal(dict) 中的 dict 将包含解析后的消息
     message_received = pyqtSignal(dict, str) # 消息字典, 发送方IP
     user_online = pyqtSignal(dict, str)      # 用户信息, IP
     user_offline = pyqtSignal(dict, str)     # 用户信息, IP
+
+    # 新增文件传输相关信号
+    # pyqtSignal(dict: 消息包, str: 发送方IP)
+    file_request_received = pyqtSignal(dict, str)
+    # pyqtSignal(dict: 消息包, str: 原始请求方IP)
+    file_receiver_ready = pyqtSignal(dict, str)
 
     def __init__(self, username, hostname, groupname="我的好友", port=protocol.IPMSG_DEFAULT_PORT):
         super().__init__()
@@ -22,15 +27,10 @@ class NetworkCore(QThread):
         self.running = True
         
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # 设置广播权限
         self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        # 设置超时以便可以检查 self.running 状态
         self.udp_socket.settimeout(1.0)
 
     def run(self):
-        """
-        线程主循环，监听UDP端口
-        """
         try:
             self.udp_socket.bind(('', self.port))
             print(f"网络核心已启动，监听端口 {self.port}")
@@ -45,7 +45,7 @@ class NetworkCore(QThread):
                 if data:
                     self.process_datagram(data, addr)
             except socket.timeout:
-                continue # 超时后继续循环，检查 self.running
+                continue
             except Exception as e:
                 print(f"接收数据时发生错误: {e}")
 
@@ -54,61 +54,46 @@ class NetworkCore(QThread):
         print("网络核心已停止。")
 
     def stop(self):
-        """
-        停止线程
-        """
         self.running = False
         self.wait()
 
     def process_datagram(self, data, addr):
-        """
-        处理收到的UDP数据包
-        """
         msg = protocol.parse_message(data)
         if not msg:
             return
             
         command = msg['command']
         mode = command & protocol.IPMSG_MODE_MASK
-
-        # 从 extra_msg 中解析显示名称和组名，使用空字符 '\0' 分隔
-        extra_parts = msg['extra_msg'].split('\0', 1)
-        msg['display_name'] = extra_parts[0]
-        # 如果没有分组信息，则提供一个默认值
-        msg['group_name'] = extra_parts[1] if len(extra_parts) > 1 and extra_parts[1] else "我的好友"
+        
+        # 仅在非文件传输消息中解析display_name和group_name
+        if mode not in [protocol.IPMSG_SEND_FILE_REQUEST, protocol.IPMSG_RECV_FILE_READY]:
+            extra_parts = msg['extra_msg'].split('\0', 1)
+            msg['display_name'] = extra_parts[0]
+            msg['group_name'] = extra_parts[1] if len(extra_parts) > 1 and extra_parts[1] else "我的好友"
 
         print(f"收到来自 {addr[0]} 的消息: {msg}")
 
-        # 根据不同命令触发不同信号
         if mode == protocol.IPMSG_BR_ENTRY:
-            # 用户上线
             self.user_online.emit(msg, addr[0])
-            # 回应对方我的在线状态
             self.answer_entry(addr[0], self.port)
         elif mode == protocol.IPMSG_ANSENTRY:
-            # 收到对方的上线回应
             self.user_online.emit(msg, addr[0])
         elif mode == protocol.IPMSG_BR_EXIT:
-            # 用户下线
             self.user_offline.emit(msg, addr[0])
         elif mode == protocol.IPMSG_SENDMSG:
-            # 收到消息
             self.message_received.emit(msg, addr[0])
-            # 实现 SENDCHECKOPT 的回执
             if msg['command'] & protocol.IPMSG_SENDCHECKOPT:
                  self.send_receipt(addr[0], self.port, msg['packet_no'])
-
-
+        # --- 新增文件传输指令处理 ---
+        elif mode == protocol.IPMSG_SEND_FILE_REQUEST:
+            self.file_request_received.emit(msg, addr[0])
+        elif mode == protocol.IPMSG_RECV_FILE_READY:
+            self.file_receiver_ready.emit(msg, addr[0])
+            
     def get_packet_no(self):
-        """
-        生成一个基于当前时间的包ID
-        """
         return int(time.time())
 
     def _send_udp_message(self, command, extra_msg_payload, dest_ip, dest_port=protocol.IPMSG_DEFAULT_PORT):
-        """
-        发送UDP消息的内部函数
-        """
         packet_no = self.get_packet_no()
         message = protocol.format_message(
             packet_no, self.username, self.hostname, command, extra_msg_payload
@@ -116,39 +101,41 @@ class NetworkCore(QThread):
         self.udp_socket.sendto(message, (dest_ip, dest_port))
 
     def broadcast_entry(self):
-        """
-        广播上线消息, 包含用户名和组名, 用 '\0' 分隔
-        """
         print("广播上线消息...")
         payload = f"{self.username}\0{self.groupname}"
         self._send_udp_message(protocol.IPMSG_BR_ENTRY, payload, '<broadcast>')
         
     def answer_entry(self, dest_ip, dest_port):
-        """
-        回应上线消息, 包含用户名和组名, 用 '\0' 分隔
-        """
         print(f"向 {dest_ip} 回应上线状态...")
         payload = f"{self.username}\0{self.groupname}"
         self._send_udp_message(protocol.IPMSG_ANSENTRY, payload, dest_ip, dest_port)
 
     def broadcast_exit(self):
-        """
-        广播下线消息
-        """
         print("广播下线消息...")
-        # 下线消息的附加信息仅为用户名
         self._send_udp_message(protocol.IPMSG_BR_EXIT, self.username, '<broadcast>')
         
     def send_message(self, message_text, dest_ip, dest_port=protocol.IPMSG_DEFAULT_PORT):
-        """
-        发送聊天消息
-        """
         command = protocol.IPMSG_SENDMSG | protocol.IPMSG_SENDCHECKOPT
         self._send_udp_message(command, message_text, dest_ip, dest_port)
     
     def send_receipt(self, dest_ip, dest_port, packet_no_to_confirm):
-        """
-        发送消息收到的回执
-        """
         self._send_udp_message(protocol.IPMSG_RECVMSG, str(packet_no_to_confirm), dest_ip, dest_port)
 
+    # --- 新增文件传输方法 ---
+    def send_file_request(self, filename, filesize, dest_ip, dest_port=protocol.IPMSG_DEFAULT_PORT):
+        """
+        发送文件传输请求
+        :param filename: 文件名
+        :param filesize: 文件大小
+        """
+        payload = f"{filename}:{filesize}"
+        self._send_udp_message(protocol.IPMSG_SEND_FILE_REQUEST, payload, dest_ip, dest_port)
+    
+    def send_file_ready_signal(self, tcp_port, packet_no, dest_ip, dest_port=protocol.IPMSG_DEFAULT_PORT):
+        """
+        告知对方已准备好接收文件
+        :param tcp_port: 本地监听的TCP端口
+        :param packet_no: 原始请求的包ID，用于对方识别
+        """
+        payload = f"{tcp_port}:{packet_no}"
+        self._send_udp_message(protocol.IPMSG_RECV_FILE_READY, payload, dest_ip, dest_port)
