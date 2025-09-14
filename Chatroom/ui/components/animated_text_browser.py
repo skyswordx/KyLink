@@ -1,73 +1,72 @@
 import os
 from PyQt5.QtWidgets import QTextBrowser
-from PyQt5.QtGui import QMovie
+from PyQt5.QtGui import QMovie, QTextDocument
 from PyQt5.QtCore import QUrl, QVariant, QByteArray
 from utils.emoji_manager import EmojiManager
 
 class AnimatedTextBrowser(QTextBrowser):
     """
-    一个能够自动加载并播放GIF表情的QTextBrowser子类。
+    一個能夠自動加載並播放GIF表情的QTextBrowser子類。
     """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.emoji_manager = EmojiManager()
         self.movie_cache = {}
+        print("[AnimatedTextBrowser] 初始化完成。")
 
     def loadResource(self, type, name: QUrl):
         """
-        重写此方法来处理自定义资源加载。
-        当QTextBrowser在HTML中遇到<img>标签时，此方法会被调用。
+        重寫此方法來處理自定義資源加載。
         """
-        # 我们只处理我们自定义的 "emoji://" 协议
         if name.scheme() == 'emoji':
-            code = name.toString().replace("emoji://", "")
-            return self.get_movie_for_emoji(code)
+            url_str = name.toString()
+            if url_str in self.movie_cache:
+                return self.movie_cache[url_str]
+            
+            movie = self.create_movie_for_emoji(name)
+            if movie:
+                self.movie_cache[url_str] = movie
+                return movie
 
-        # 对于所有其他资源，使用默认的加载行为
         return super().loadResource(type, name)
 
-    def get_movie_for_emoji(self, code):
+    def create_movie_for_emoji(self, url: QUrl):
         """
-        为给定的表情代码获取或创建一个QMovie对象。
+        為給定的 URL 創建一個 QMovie 對象。
         """
-        # 如果已经为这个表情创建了动画，则直接从缓存返回
-        if code in self.movie_cache:
-            return self.movie_cache[code]
+        code = url.toString().replace("emoji:", "")
+        print(f"[create_movie_for_emoji] 正在為代碼 '{code}' 創建 QMovie...")
 
-        # 从EmojiManager获取表情的本地文件路径
         path = self.emoji_manager.get_emoji_path(code)
+        print(f"[create_movie_for_emoji] 正在為 '{code}' 尋找 GIF 路徑... 結果: {path}")
 
         if path and os.path.exists(path):
-            # 创建一个新的QMovie对象
             movie = QMovie(path, QByteArray(), self)
-            # 将动画的frameChanged信号连接到我们的更新槽
-            movie.frameChanged.connect(lambda: self.on_frame_changed(code))
             
-            # 将动画存入缓存
-            self.movie_cache[code] = movie
-            movie.start()
-            return QVariant(movie)
+            # --- 最終修正 ---
+            # 將 frameChanged 信號連接到 on_frame_changed 方法
+            # 使用 lambda 來捕獲當前的 url 變數，確保傳遞正確的 URL
+            movie.frameChanged.connect(lambda: self.on_frame_changed(url))
+            
+            if movie.isValid():
+                print(f"[create_movie_for_emoji] 為 '{code}' 創建 QMovie 成功，路徑: {path}")
+                movie.start()
+                return movie
+            else:
+                print(f"[create_movie_for_emoji] 錯誤：為 '{code}' 創建的 QMovie 無效，路徑: {path}")
+        else:
+            print(f"[create_movie_for_emoji] 錯誤：找不到表情 '{code}' 的 GIF 檔案，路徑: {path}")
+        
+        return None
 
-        # 如果找不到表情，返回一个空对象
-        return QVariant()
-
-    def on_frame_changed(self, code):
+    def on_frame_changed(self, url: QUrl):
         """
-        当动画帧改变时，此槽被调用。
-        它会强制文档重新加载这个特定的图片资源。
+        當動畫幀改變時，此槽被調用，強制文檔重繪。
         """
-        iterator = self.document().rootFrame().begin()
-        while not iterator.atEnd():
-            fragment = iterator.fragment()
-            if fragment.isValid():
-                if fragment.charFormat().isImageFormat():
-                    img_format = fragment.charFormat().toImageFormat()
-                    # 如果这个图片就是我们正在更新的表情，则重新加载它
-                    if img_format.name() == f"emoji://{code}":
-                        # setControl()方法似乎不存在于所有版本，更可靠的方法是重新设置URL
-                        cursor = self.textCursor()
-                        cursor.setPosition(fragment.position())
-                        cursor.setPosition(fragment.position() + fragment.length(), cursor.KeepAnchor)
-                        cursor.setCharFormat(img_format)
-
-            iterator += 1
+        movie = self.movie_cache.get(url.toString())
+        if movie:
+            print(f"[on_frame_changed] 偵測到 '{url.toString()}' 的幀變化，正在刷新...")
+            # 更新文檔的快取資源為電影的當前幀
+            self.document().addResource(QTextDocument.ImageResource, url, movie.currentPixmap())
+            # 觸發包含該資源的視圖部分的重繪
+            self.setDocument(self.document())
