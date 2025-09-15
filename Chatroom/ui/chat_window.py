@@ -1,3 +1,5 @@
+# Chatroom/ui/chat_window.py (已修正)
+
 import os
 import re
 import time
@@ -6,8 +8,8 @@ from PyQt5.QtCore import pyqtSlot, Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QTextCursor, QTextImageFormat
 
 from qframelesswindow import FramelessWindow, StandardTitleBar
-from qfluentwidgets import (TextEdit, PushButton, MessageBox, ToolButton, 
-                            FluentIcon as FIF, isDarkTheme)
+from qfluentwidgets import (TextEdit, PushButton, MessageBox, ToolButton,
+                            FluentIcon as FIF, isDarkTheme, SmoothScrollBar)
 
 from utils.emoji_manager import EmojiManager
 from ui.components.emoji_picker import EmojiPicker
@@ -52,6 +54,12 @@ class ChatWindow(FramelessWindow):
         self.message_display.setOpenExternalLinks(False)
         self.message_display.anchorClicked.connect(self.handle_link_clicked)
         
+        # --- 修正之处 ---
+        # 只需要创建 SmoothScrollBar 实例，并把滚动区域 (message_display) 作为父组件传入即可
+        # 它会自动替换掉默认的滚动条
+        SmoothScrollBar(Qt.Vertical, self.message_display)
+        self.message_display.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         toolbar_layout = QHBoxLayout()
         self.emoji_button = ToolButton(FIF.CHAT, self)
         self.screenshot_button = ToolButton(FIF.CUT, self)
@@ -84,18 +92,15 @@ class ChatWindow(FramelessWindow):
             window_bg = "rgb(32, 32, 32)"
             widget_bg = "rgb(43, 43, 43)"
             text_color = "white"
-            scroll_bar_bg = "transparent"
-            scroll_bar_handle = "rgb(90, 90, 90)"
-            scroll_bar_handle_hover = "rgb(120, 120, 120)"
         else:
             window_bg = "rgb(243, 243, 243)"
             widget_bg = "white"
             text_color = "black"
-            scroll_bar_bg = "transparent"
-            scroll_bar_handle = "rgb(220, 220, 220)"
-            scroll_bar_handle_hover = "rgb(180, 180, 180)"
 
         style_sheet = f"""
+            ChatWindow {{
+                background-color: {window_bg};
+            }}
             #ChatAreaWidget {{
                 background-color: {window_bg};
             }}
@@ -105,28 +110,11 @@ class ChatWindow(FramelessWindow):
                 border: none;
                 border-radius: 5px;
             }}
-            QScrollBar:vertical {{
-                border: none;
-                background: {scroll_bar_bg};
-                width: 8px;
-                margin: 0px 0px 0px 0px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {scroll_bar_handle};
-                min-height: 20px;
-                border-radius: 4px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: {scroll_bar_handle_hover};
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                border: none;
-                background: none;
-                height: 0px;
-            }}
         """
         self.chat_area_widget.setObjectName("ChatAreaWidget")
         self.setStyleSheet(style_sheet)
+
+    # ... (文件其余部分保持不变) ...
 
     def format_text_for_display(self, text):
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
