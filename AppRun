@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HERE="$(dirname "$(readlink -f "$0")")"
+
+# Qt plugins inside AppImage (provided by linuxdeploy-plugin-qt)
+export QT_QPA_PLATFORM_PLUGIN_PATH="$HERE/usr/plugins/platforms"
+export QT_PLUGIN_PATH="$HERE/usr/plugins"
+export QT_QPA_FONTDIR="$HERE/usr/share/fonts"
+
+# Prefer bundled libs
+export LD_LIBRARY_PATH="$HERE/usr/lib:$LD_LIBRARY_PATH"
+
+exec "$HERE/usr/bin/python3" -m Chatroom.main "$@"
+
