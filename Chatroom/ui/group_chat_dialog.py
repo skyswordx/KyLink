@@ -1,10 +1,11 @@
 from PyQt5.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget
 from qframelesswindow import FramelessDialog, StandardTitleBar
-from qfluentwidgets import TextEdit, PushButton, SubtitleLabel, MessageBox, isDarkTheme
+from qfluentwidgets import (TextEdit, PushButton, BodyLabel, MessageBox, 
+                            isDarkTheme, setTheme, Theme)
 
 class GroupChatDialog(FramelessDialog):
     """
-    一個用於向群組發送消息的、具有 Fluent 風格的對話方塊。
+    一个用于向群组发送消息的、具有 Fluent 风格的对话框。
     """
     def __init__(self, own_username, group_name, recipients, network_core, main_window, parent=None):
         super().__init__(parent=parent)
@@ -18,11 +19,19 @@ class GroupChatDialog(FramelessDialog):
         # 設定自訂標題列和視窗標題
         self.setTitleBar(StandardTitleBar(self))
         self.titleBar.raise_()
-        self.setWindowTitle(f"向組 '{self.group_name}' 發送消息")
+        self.setWindowTitle(f"向组 '{self.group_name}' 发送消息")
         self.setMinimumWidth(450)
         
         self.init_ui()
         self.set_window_style()
+        # 標題欄暗色統一
+        if hasattr(self, 'titleBar') and self.titleBar is not None:
+            if isDarkTheme():
+                self.titleBar.setStyleSheet(
+                    "QLabel{color:white;} QToolButton{color:white;} QToolButton:hover{background-color: rgba(255,255,255,0.08);} QToolButton:pressed{background-color: rgba(255,255,255,0.14);}"
+                )
+            else:
+                self.titleBar.setStyleSheet("")
         
     def init_ui(self):
         # FramelessDialog 需要一個佈局來管理其內容
@@ -38,16 +47,17 @@ class GroupChatDialog(FramelessDialog):
         # 接收者標籤
         recipient_names = ", ".join([r['name'] for r in self.recipients])
         info_label_text = f"<b>接收者 ({len(self.recipients)}):</b> {recipient_names}"
-        info_label = SubtitleLabel(info_label_text, self)
+        info_label = BodyLabel(info_label_text, self)
+        info_label.setStyleSheet("font-size: 13px;")
         info_label.setWordWrap(True)
 
         # 訊息輸入框
         self.message_input = TextEdit(self)
-        self.message_input.setPlaceholderText("在此輸入要發送的群組消息...")
+        self.message_input.setPlaceholderText("在此輸入要群发的消息...")
         
         # 按鈕佈局
         button_layout = QHBoxLayout()
-        send_button = PushButton("發送", self)
+        send_button = PushButton("发送", self)
         cancel_button = PushButton("取消", self)
         button_layout.addStretch(1)
         button_layout.addWidget(cancel_button)
@@ -63,17 +73,29 @@ class GroupChatDialog(FramelessDialog):
 
     def set_window_style(self):
         """ 根據當前主題為視窗和其子元件設定樣式 """
+        # 不改变全局主题，只统一配色
         if isDarkTheme():
-            bg_color = "rgb(43, 43, 43)"
+            window_bg = "rgb(32, 32, 32)"
+            widget_bg = "rgb(43, 43, 43)"
             text_color = "white"
         else:
-            bg_color = "rgb(249, 249, 249)"
+            window_bg = "rgb(243, 243, 243)"
+            widget_bg = "white"
             text_color = "black"
 
         style_sheet = f"""
+            FramelessDialog {{
+                background-color: {window_bg};
+            }}
             QWidget {{
-                background-color: {bg_color};
+                background-color: {widget_bg};
                 color: {text_color};
+            }}
+            TextEdit {{
+                background-color: {widget_bg};
+                color: {text_color};
+                border: none;
+                border-radius: 5px;
             }}
         """
         self.setStyleSheet(style_sheet)
@@ -81,11 +103,11 @@ class GroupChatDialog(FramelessDialog):
     def send_group_message(self):
         message_text = self.message_input.toPlainText().strip()
         if not message_text:
-            # 使用 Fluent 風格的 MessageBox
-            MessageBox("警告", "不能發送空消息！", self).exec()
+            # 使用 Fluent 风格的 MessageBox
+            MessageBox("警告", "不能发送空消息！", self).exec()
             return
-            
-        full_message = f"(來自群組 '{self.group_name}' 的消息)\n{message_text}"
+
+        full_message = f"(来自群组 '{self.group_name}' 的消息)\n{message_text}"
 
         for recipient in self.recipients:
             target_ip = recipient['ip']
@@ -98,7 +120,7 @@ class GroupChatDialog(FramelessDialog):
             if target_ip in self.main_window.chat_windows:
                 chat_win = self.main_window.chat_windows[target_ip]
                 chat_win.append_message(full_message, self.own_username, is_own=True)
-                
-        # 使用 Fluent 風格的 MessageBox
-        MessageBox("成功", f"消息已發送給組 '{self.group_name}' 的 {len(self.recipients)} 位成員。", self).exec()
+
+        # 使用 Fluent 风格的 MessageBox
+        MessageBox("成功", f"消息已发送给组 '{self.group_name}' 的 {len(self.recipients)} 位成员。", self).exec()
         self.accept()

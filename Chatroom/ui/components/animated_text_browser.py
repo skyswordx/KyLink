@@ -68,5 +68,29 @@ class AnimatedTextBrowser(QTextBrowser):
             print(f"[on_frame_changed] 偵測到 '{url.toString()}' 的幀變化，正在刷新...")
             # 更新文檔的快取資源為電影的當前幀
             self.document().addResource(QTextDocument.ImageResource, url, movie.currentPixmap())
-            # 觸發包含該資源的視圖部分的重繪
-            self.setDocument(self.document())
+            # 觸發包含該資源的視圖部分的重繪（避免 setDocument 引起頻繁重建導致 UI 阻塞）
+            self.viewport().update()
+
+    def pause_animations(self, paused: bool):
+        """暫停/恢復所有表情動畫，避免在顯示模態對話框時造成事件循環壓力。"""
+        for m in self.movie_cache.values():
+            try:
+                m.setPaused(paused)
+            except Exception:
+                pass
+
+    def stop_animations(self):
+        """停止所有動畫。"""
+        for m in self.movie_cache.values():
+            try:
+                m.stop()
+            except Exception:
+                pass
+
+    def start_animations(self):
+        """重新啟動所有動畫。"""
+        for m in self.movie_cache.values():
+            try:
+                m.start()
+            except Exception:
+                pass

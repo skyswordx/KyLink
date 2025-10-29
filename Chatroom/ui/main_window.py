@@ -30,7 +30,7 @@ class ChatInterface(QWidget):
         self.user_tree_widget.setHeaderLabels(['在線好友'])
 
         bottom_layout = QHBoxLayout()
-        self.group_message_button = PushButton("群發消息", self)
+        self.group_message_button = PushButton("群发消息", self)
         self.status_label = BodyLabel("正在初始化...", self)
         bottom_layout.addWidget(self.group_message_button)
         bottom_layout.addStretch(1)
@@ -72,7 +72,7 @@ class MainWindow(FluentWindow):
         self.users = {} 
         self.chat_windows = {}
         self.username = "PyUser"
-        self.groupname = "開發組"
+        self.groupname = "开发者 skyswordx"
         self.hostname = socket.gethostname()
         
         self.network_thread = NetworkCore(self.username, self.hostname, self.groupname)
@@ -124,7 +124,7 @@ class MainWindow(FluentWindow):
             group_item.setText(0, f"{group_name} [{count}]")
         
         self.chat_interface.user_tree_widget.expandAll()
-        self.chat_interface.status_label.setText(f"在線用戶: {len(self.users)}")
+        self.chat_interface.status_label.setText(f"在线用户: {len(self.users)}")
         self.filter_user_list()
 
     @pyqtSlot(str)
@@ -208,7 +208,7 @@ class MainWindow(FluentWindow):
                 packet_no = self.network_thread.get_packet_no()
                 self.chat_windows[target_ip].pending_files[packet_no] = filepath
         except Exception as e:
-            MessageBox("錯誤", f"無法發送文件請求: {e}", self).exec()
+            MessageBox("错误", f"无法发送文件请求: {e}", self).exec()
 
     @pyqtSlot(QTreeWidgetItem, int)
     def open_chat_window_from_tree(self, item, column):
@@ -220,7 +220,7 @@ class MainWindow(FluentWindow):
     def open_group_chat_dialog(self):
         selected_item = self.chat_interface.user_tree_widget.currentItem()
         if not selected_item:
-            MessageBox("操作提示", "請先在列表中選擇一個分組或一位用戶。", self).exec()
+            MessageBox("操作提示", "请先在列表中选择一个分组或一位用户。", self).exec()
             return
             
         item_data = selected_item.data(0, Qt.UserRole)
@@ -241,7 +241,7 @@ class MainWindow(FluentWindow):
                 })
 
         if not recipients:
-            MessageBox("提示", "該分組中沒有可發送消息的用戶。", self).exec()
+            MessageBox("提示", "该分组中没有可发送消息的用户。", self).exec()
             return
 
         dialog = GroupChatDialog(self.username, group_name, recipients, self.network_thread, self)

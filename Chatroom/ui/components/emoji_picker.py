@@ -1,6 +1,8 @@
-from PyQt5.QtWidgets import QDialog, QGridLayout, QLabel
+from PyQt5.QtWidgets import QGridLayout, QLabel, QWidget, QVBoxLayout
 from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtGui import QMovie
+from qfluentwidgets import isDarkTheme
+from qframelesswindow import FramelessDialog, StandardTitleBar
 
 class ClickableLabel(QLabel):
     """
@@ -19,7 +21,7 @@ class ClickableLabel(QLabel):
             self.clicked.emit(self.code)
         super().mousePressEvent(event)
 
-class EmojiPicker(QDialog):
+class EmojiPicker(FramelessDialog):
     emoji_selected = pyqtSignal(str)
 
     def __init__(self, emoji_manager, parent=None):
@@ -28,14 +30,26 @@ class EmojiPicker(QDialog):
         self.setWindowTitle("选择表情")
         self.setFixedSize(400, 300)
         
+        # 自定义标题栏以统一配色
+        self.setTitleBar(StandardTitleBar(self))
+        self.titleBar.raise_()
+        
         # 这个列表至关重要，它能防止QMovie对象被垃圾回收机制提前销毁
         self.movies = [] 
         
         self.init_ui()
+        self.apply_style()
+        # 標題欄暗色統一
+        self._apply_titlebar_style()
 
     def init_ui(self):
-        layout = QGridLayout(self)
-        self.setLayout(layout)
+        # 外层布局，避开标题栏高度
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, self.titleBar.height(), 0, 0)
+        container = QWidget(self)
+        root_layout.addWidget(container)
+        layout = QGridLayout(container)
+        layout.setContentsMargins(12, 12, 12, 12)
         
         emojis = self.emoji_manager.get_all_emojis()
         if not emojis:
@@ -75,3 +89,36 @@ class EmojiPicker(QDialog):
     def on_emoji_click(self, code):
         self.emoji_selected.emit(code)
         self.accept() # 关闭对话框
+
+    def apply_style(self):
+        # 与主窗保持一致的暗色/亮色配色
+        if isDarkTheme():
+            window_bg = "rgb(32, 32, 32)"
+            widget_bg = "rgb(43, 43, 43)"
+            text_color = "white"
+        else:
+            window_bg = "rgb(243, 243, 243)"
+            widget_bg = "white"
+            text_color = "black"
+
+        # 最小必要样式，避免影响Fluent控件
+        style_sheet = f"""
+            FramelessDialog {{
+                background-color: {window_bg};
+                color: {text_color};
+            }}
+            QLabel {{
+                background-color: {widget_bg};
+                border-radius: 6px;
+            }}
+        """
+        self.setStyleSheet(style_sheet)
+
+    def _apply_titlebar_style(self):
+        if hasattr(self, 'titleBar') and self.titleBar is not None:
+            if isDarkTheme():
+                self.titleBar.setStyleSheet(
+                    "QLabel{color:white;} QToolButton{color:white;} QToolButton:hover{background-color: rgba(255,255,255,0.08);} QToolButton:pressed{background-color: rgba(255,255,255,0.14);}"
+                )
+            else:
+                self.titleBar.setStyleSheet("")
