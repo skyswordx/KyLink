@@ -72,14 +72,14 @@ class AuthorCard(QWidget):
         self.hBoxLayout = QHBoxLayout(self)
         self.vBoxLayout = QVBoxLayout()
 
-        # Avatar placeholder - 使用一个存在的图标
+        # Avatar placeholder - 使用开发者/代码图标，避免与导航栏重复
         try:
-            avatar_icon = FluentIcon.ACCOUNT
+            avatar_icon = FluentIcon.CODE  # 使用代码图标表示开发者
         except AttributeError:
             try:
-                avatar_icon = FluentIcon.CONTACT
+                avatar_icon = FluentIcon.DOCUMENT
             except AttributeError:
-                avatar_icon = FluentIcon.INFO  # 使用 INFO 作为后备图标
+                avatar_icon = FluentIcon.HELP  # 使用 HELP 作为后备图标
         
         self.avatarWidget = IconWidget(avatar_icon, self)
         self.avatarWidget.setFixedSize(64, 64)

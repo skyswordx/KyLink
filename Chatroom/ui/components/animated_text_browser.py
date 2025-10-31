@@ -1,30 +1,47 @@
 import os
+from collections import OrderedDict
 from PyQt5.QtWidgets import QTextBrowser
 from PyQt5.QtGui import QMovie, QTextDocument
-from PyQt5.QtCore import QUrl, QVariant, QByteArray
+from PyQt5.QtCore import QUrl, QByteArray
 from utils.emoji_manager import EmojiManager
 
 class AnimatedTextBrowser(QTextBrowser):
     """
     一個能夠自動加載並播放GIF表情的QTextBrowser子類。
+    優化版本：限制緩存大小，減少內存占用。
     """
+    # 最大緩存表情數量（限制內存占用）
+    MAX_CACHE_SIZE = 20
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.emoji_manager = EmojiManager()
-        self.movie_cache = {}
-        print("[AnimatedTextBrowser] 初始化完成。")
+        # 使用 OrderedDict 實現 LRU 緩存
+        self.movie_cache = OrderedDict()
 
     def loadResource(self, type, name: QUrl):
         """
         重寫此方法來處理自定義資源加載。
+        使用 LRU 緩存策略，限制內存占用。
         """
         if name.scheme() == 'emoji':
             url_str = name.toString()
+            
+            # 檢查緩存
             if url_str in self.movie_cache:
+                # 移動到末尾（最近使用）
+                self.movie_cache.move_to_end(url_str)
                 return self.movie_cache[url_str]
             
+            # 緩存未命中，創建新的 movie
             movie = self.create_movie_for_emoji(name)
             if movie:
+                # 如果緩存已滿，移除最舊的項目
+                if len(self.movie_cache) >= self.MAX_CACHE_SIZE:
+                    oldest_url, oldest_movie = self.movie_cache.popitem(last=False)
+                    oldest_movie.stop()
+                    oldest_movie.deleteLater()
+                
                 self.movie_cache[url_str] = movie
                 return movie
 
@@ -32,30 +49,18 @@ class AnimatedTextBrowser(QTextBrowser):
 
     def create_movie_for_emoji(self, url: QUrl):
         """
-        為給定的 URL 創建一個 QMovie 對象。
+        為給定的 URL 創建一個 QMovie 對象（延遲加載）。
         """
         code = url.toString().replace("emoji:", "")
-        print(f"[create_movie_for_emoji] 正在為代碼 '{code}' 創建 QMovie...")
-
         path = self.emoji_manager.get_emoji_path(code)
-        print(f"[create_movie_for_emoji] 正在為 '{code}' 尋找 GIF 路徑... 結果: {path}")
 
         if path and os.path.exists(path):
             movie = QMovie(path, QByteArray(), self)
-            
-            # --- 最終修正 ---
-            # 將 frameChanged 信號連接到 on_frame_changed 方法
-            # 使用 lambda 來捕獲當前的 url 變數，確保傳遞正確的 URL
             movie.frameChanged.connect(lambda: self.on_frame_changed(url))
             
             if movie.isValid():
-                print(f"[create_movie_for_emoji] 為 '{code}' 創建 QMovie 成功，路徑: {path}")
                 movie.start()
                 return movie
-            else:
-                print(f"[create_movie_for_emoji] 錯誤：為 '{code}' 創建的 QMovie 無效，路徑: {path}")
-        else:
-            print(f"[create_movie_for_emoji] 錯誤：找不到表情 '{code}' 的 GIF 檔案，路徑: {path}")
         
         return None
 
@@ -65,10 +70,9 @@ class AnimatedTextBrowser(QTextBrowser):
         """
         movie = self.movie_cache.get(url.toString())
         if movie:
-            print(f"[on_frame_changed] 偵測到 '{url.toString()}' 的幀變化，正在刷新...")
             # 更新文檔的快取資源為電影的當前幀
             self.document().addResource(QTextDocument.ImageResource, url, movie.currentPixmap())
-            # 觸發包含該資源的視圖部分的重繪（避免 setDocument 引起頻繁重建導致 UI 阻塞）
+            # 觸發包含該資源的視圖部分的重繪
             self.viewport().update()
 
     def pause_animations(self, paused: bool):
@@ -80,12 +84,14 @@ class AnimatedTextBrowser(QTextBrowser):
                 pass
 
     def stop_animations(self):
-        """停止所有動畫。"""
+        """停止所有動畫並清理緩存。"""
         for m in self.movie_cache.values():
             try:
                 m.stop()
+                m.deleteLater()
             except Exception:
                 pass
+        self.movie_cache.clear()
 
     def start_animations(self):
         """重新啟動所有動畫。"""
@@ -94,3 +100,18 @@ class AnimatedTextBrowser(QTextBrowser):
                 m.start()
             except Exception:
                 pass
+    
+    def clear_cache(self):
+        """手動清理緩存，釋放內存。"""
+        self.stop_animations()
+    
+    def cleanup_old_cache(self):
+        """清理未使用的緩存項（可選，用於定期清理）。"""
+        if len(self.movie_cache) > self.MAX_CACHE_SIZE:
+            # 移除最舊的一半
+            items_to_remove = len(self.movie_cache) - self.MAX_CACHE_SIZE // 2
+            for _ in range(items_to_remove):
+                if self.movie_cache:
+                    oldest_url, oldest_movie = self.movie_cache.popitem(last=False)
+                    oldest_movie.stop()
+                    oldest_movie.deleteLater()

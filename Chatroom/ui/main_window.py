@@ -100,31 +100,34 @@ class MainWindow(FluentWindow):
         # 添加分隔線
         self.navigationInterface.addSeparator()
         
-        # 添加關於介面到底部
+        # 添加關於介面到底部 - 使用不同的图标避免与用户图标重复
         self.addSubInterface(
             self.about_interface,
-            FIF.INFO,
+            FIF.HELP,  # 使用 HELP 图标，表示关于/帮助页面
             self.tr('关于'),
             position=NavigationItemPosition.BOTTOM
         )
         
         # 添加用戶頭像到底部導航欄
-        # 使用一个存在的图标
+        # 使用用户相关的图标
         try:
-            user_icon = FIF.ACCOUNT
+            user_icon = FIF.PERSON  # 优先使用 PERSON 图标
         except AttributeError:
             try:
                 user_icon = FIF.CONTACT
             except AttributeError:
-                user_icon = FIF.INFO  # 使用 INFO 作为后备图标
+                try:
+                    user_icon = FIF.ACCOUNT
+                except AttributeError:
+                    user_icon = FIF.HOME  # 最后的后备图标
                 
         self.navigationInterface.addItem(
             routeKey='user_avatar',
             icon=user_icon,
             text=self.username,
-            onClick=None,  # 可以添加點擊事件，如顯示用戶設置
+            onClick=self.show_user_info,  # 添加点击事件
             selectable=False,
-            tooltip=f"{self.username}\n{self.hostname}",
+            tooltip=f"{self.username}\n{self.hostname}\n点击查看用户信息",
             position=NavigationItemPosition.BOTTOM
         )
 
@@ -294,4 +297,60 @@ class MainWindow(FluentWindow):
             return
 
         dialog = GroupChatDialog(self.username, group_name, recipients, self.network_thread, self)
+        dialog.exec_()
+    
+    @pyqtSlot()
+    def show_user_info(self):
+        """显示用户信息对话框"""
+        from qframelesswindow import FramelessDialog, StandardTitleBar
+        from qfluentwidgets import (VBoxLayout, SubtitleLabel, BodyLabel, 
+                                    PrimaryPushButton, isDarkTheme)
+        from PyQt5.QtWidgets import QWidget
+        
+        dialog = FramelessDialog(self)
+        dialog.setTitleBar(StandardTitleBar(dialog))
+        dialog.titleBar.raise_()
+        dialog.setWindowTitle(self.tr('用户信息'))
+        dialog.setMinimumWidth(400)
+        dialog.setMinimumHeight(300)
+        
+        # 创建内容widget
+        content = QWidget()
+        layout = VBoxLayout(content)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # 用户信息
+        title_label = SubtitleLabel(self.tr('当前用户信息'), content)
+        username_label = BodyLabel(f"{self.tr('用户名')}: {self.username}", content)
+        hostname_label = BodyLabel(f"{self.tr('主机名')}: {self.hostname}", content)
+        group_label = BodyLabel(f"{self.tr('组名')}: {self.groupname}", content)
+        online_count_label = BodyLabel(f"{self.tr('在线用户数')}: {len(self.users)}", content)
+        
+        layout.addWidget(title_label)
+        layout.addSpacing(10)
+        layout.addWidget(username_label)
+        layout.addWidget(hostname_label)
+        layout.addWidget(group_label)
+        layout.addWidget(online_count_label)
+        layout.addStretch()
+        
+        # 添加按钮
+        button = PrimaryPushButton(self.tr('确定'), content)
+        button.clicked.connect(dialog.accept)
+        layout.addWidget(button)
+        
+        # 设置对话框布局
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(0, dialog.titleBar.height(), 0, 0)
+        dialog_layout.addWidget(content)
+        
+        # 设置样式
+        if isDarkTheme():
+            dialog.setStyleSheet("""
+                FramelessDialog {
+                    background-color: rgb(32, 32, 32);
+                }
+            """)
+        
         dialog.exec_()

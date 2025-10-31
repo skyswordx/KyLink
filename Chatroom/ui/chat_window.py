@@ -293,6 +293,13 @@ class ChatWindow(FramelessWindow):
             QDesktopServices.openUrl(url)
 
     def closeEvent(self, event):
+        # 清理动画缓存，释放内存
+        if hasattr(self, 'message_display'):
+            try:
+                self.message_display.clear_cache()
+            except Exception:
+                pass
+        
         if self.target_ip in self.main_window.chat_windows:
             del self.main_window.chat_windows[self.target_ip]
         super().closeEvent(event)
