@@ -15,6 +15,7 @@ from qfluentwidgets import (TextEdit, PushButton, MessageBox, ToolButton,
 from utils.emoji_manager import EmojiManager
 from ui.components.emoji_picker import EmojiPicker
 from ui.components.screenshot_tool import ScreenshotTool
+from ui.components.camera_widget import CameraDialog
 from ui.components.animated_text_browser import AnimatedTextBrowser
 from core.file_transfer import FileSender, FileReceiver
 
@@ -67,8 +68,11 @@ class ChatWindow(FramelessWindow):
         self.emoji_button.setToolTip("表情")
         self.screenshot_button = ToolButton(FIF.CUT, self)
         self.screenshot_button.setToolTip("截图")
+        self.camera_button = ToolButton(FIF.CAMERA, self)
+        self.camera_button.setToolTip("摄像头")
         toolbar_layout.addWidget(self.emoji_button)
         toolbar_layout.addWidget(self.screenshot_button)
+        toolbar_layout.addWidget(self.camera_button)
         toolbar_layout.addStretch(1)
 
         self.message_input = TextEdit(self)
@@ -89,6 +93,7 @@ class ChatWindow(FramelessWindow):
         send_button.clicked.connect(self.send_message)
         self.emoji_button.clicked.connect(self.open_emoji_picker)
         self.screenshot_button.clicked.connect(self.start_screenshot)
+        self.camera_button.clicked.connect(self.open_camera)
 
         self.set_window_style()
         # 确保无边框标题栏文本与窗口标题同步
@@ -213,6 +218,23 @@ class ChatWindow(FramelessWindow):
         self.activateWindow()
         self.append_image(image_path, self.own_username, is_own=True)
         self.send_file_request.emit(self.target_ip, image_path)
+    
+    @pyqtSlot()
+    def open_camera(self):
+        """打开摄像头对话框"""
+        try:
+            dialog = CameraDialog(self)
+            dialog.photo_captured.connect(self.handle_photo_captured)
+            dialog.exec_()
+        except Exception as e:
+            MessageBox("错误", f"无法打开摄像头: {e}", self).exec()
+    
+    @pyqtSlot(str)
+    def handle_photo_captured(self, image_path):
+        """处理拍照完成"""
+        if os.path.exists(image_path):
+            self.append_image(image_path, self.own_username, is_own=True)
+            self.send_file_request.emit(self.target_ip, image_path)
 
     @pyqtSlot(dict, str)
     def handle_file_request(self, msg, sender_ip):
