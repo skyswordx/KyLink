@@ -34,7 +34,8 @@ class ChatWindow(FramelessWindow):
         self.emoji_manager = EmojiManager()
         self.pending_files = {}
 
-        self.setWindowTitle(f"与 {self.target_user_info['sender']} ({self.target_ip}) 单聊")
+        sender_name = self.target_user_info.get('sender', 'Unknown')
+        self.setWindowTitle(f"与 {sender_name} 聊天")
         self.setGeometry(300, 300, 500, 500)
         
         self.setTitleBar(StandardTitleBar(self))
@@ -49,7 +50,8 @@ class ChatWindow(FramelessWindow):
         layout.addWidget(self.chat_area_widget)
 
         content_layout = QVBoxLayout(self.chat_area_widget)
-        content_layout.setContentsMargins(10, 10, 10, 10)
+        content_layout.setContentsMargins(15, 15, 15, 15)
+        content_layout.setSpacing(10)
 
         # 使用支持自定义资源协议（emoji:）的 AnimatedTextBrowser，确保表情能正确显示
         self.message_display = AnimatedTextBrowser(self)
@@ -61,17 +63,21 @@ class ChatWindow(FramelessWindow):
         self.message_display.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         toolbar_layout = QHBoxLayout()
-        self.emoji_button = ToolButton(FIF.CHAT, self)
+        self.emoji_button = ToolButton(FIF.EMOJI_TAB_SYMBOLS, self)
+        self.emoji_button.setToolTip("表情")
         self.screenshot_button = ToolButton(FIF.CUT, self)
+        self.screenshot_button.setToolTip("截图")
         toolbar_layout.addWidget(self.emoji_button)
         toolbar_layout.addWidget(self.screenshot_button)
         toolbar_layout.addStretch(1)
 
         self.message_input = TextEdit(self)
+        self.message_input.setPlaceholderText("输入消息...")
         self.message_input.setFixedHeight(100)
         
         button_layout = QHBoxLayout()
         send_button = PushButton("发送")
+        send_button.setIcon(FIF.SEND)
         button_layout.addStretch(1)
         button_layout.addWidget(send_button)
         

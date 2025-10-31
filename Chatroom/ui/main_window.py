@@ -10,6 +10,8 @@ from qfluentwidgets import (FluentWindow, NavigationItemPosition,
 from core.network import NetworkCore
 from ui.chat_window import ChatWindow
 from ui.group_chat_dialog import GroupChatDialog
+from ui.about_interface import AboutInterface
+from utils.config import cfg, APP_NAME, AUTHOR
 
 class ChatInterface(QWidget):
     """
@@ -31,6 +33,7 @@ class ChatInterface(QWidget):
 
         bottom_layout = QHBoxLayout()
         self.group_message_button = PushButton("群发消息", self)
+        self.group_message_button.setIcon(FIF.SEND)
         self.status_label = BodyLabel("正在初始化...", self)
         bottom_layout.addWidget(self.group_message_button)
         bottom_layout.addStretch(1)
@@ -38,6 +41,8 @@ class ChatInterface(QWidget):
 
         # --- 整體佈局 ---
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
         layout.addWidget(self.search_input)
         layout.addWidget(self.user_tree_widget)
         layout.addLayout(bottom_layout)
@@ -51,33 +56,77 @@ class ChatInterface(QWidget):
 class MainWindow(FluentWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PyFeiQ Fluent")
+        self.setWindowTitle(APP_NAME)
         self.setWindowIcon(QIcon(":/qfluentwidgets/images/logo.png"))
-        self.setGeometry(300, 300, 450, 700)
+        self.setGeometry(300, 300, 900, 700)
+        self.setMinimumWidth(760)
 
-        # 創建聊天主介面並將其添加到堆疊視窗中
-        self.chat_interface = ChatInterface(self)
-        self.stackedWidget.addWidget(self.chat_interface)
+        # Enable acrylic effect
+        self.navigationInterface.setAcrylicEnabled(True)
 
-        # 設置導覽列
-        self.navigationInterface.addItem(
-            routeKey='chat_interface',
-            icon=FIF.MESSAGE,
-            text='聊天',
-            onClick=lambda: self.stackedWidget.setCurrentWidget(self.chat_interface),
-            position=NavigationItemPosition.TOP
-        )
-        
         # --- 核心邏輯初始化 ---
         self.users = {} 
         self.chat_windows = {}
-        self.username = "PyUser"
-        self.groupname = "开发者 skyswordx"
+        self.username = cfg.get(cfg.username)
+        self.groupname = cfg.get(cfg.groupname)
         self.hostname = socket.gethostname()
         
+        # 創建子介面
+        self.chat_interface = ChatInterface(self)
+        self.about_interface = AboutInterface(self)
+        
+        # 添加到堆疊視窗
+        self.stackedWidget.addWidget(self.chat_interface)
+        self.stackedWidget.addWidget(self.about_interface)
+
+        # 初始化導覽列
+        self.initNavigation()
+        
+        # 設置網路連接
         self.network_thread = NetworkCore(self.username, self.hostname, self.groupname)
         self.setup_connections()
         self.network_thread.start()
+
+    def initNavigation(self):
+        """初始化導覽列"""
+        # 添加導航項目
+        self.addSubInterface(
+            self.chat_interface,
+            FIF.MESSAGE,
+            self.tr('聊天'),
+            position=NavigationItemPosition.TOP
+        )
+        
+        # 添加分隔線
+        self.navigationInterface.addSeparator()
+        
+        # 添加關於介面到底部
+        self.addSubInterface(
+            self.about_interface,
+            FIF.INFO,
+            self.tr('关于'),
+            position=NavigationItemPosition.BOTTOM
+        )
+        
+        # 添加用戶頭像到底部導航欄
+        # 使用一个存在的图标
+        try:
+            user_icon = FIF.ACCOUNT
+        except AttributeError:
+            try:
+                user_icon = FIF.CONTACT
+            except AttributeError:
+                user_icon = FIF.INFO  # 使用 INFO 作为后备图标
+                
+        self.navigationInterface.addItem(
+            routeKey='user_avatar',
+            icon=user_icon,
+            text=self.username,
+            onClick=None,  # 可以添加點擊事件，如顯示用戶設置
+            selectable=False,
+            tooltip=f"{self.username}\n{self.hostname}",
+            position=NavigationItemPosition.BOTTOM
+        )
 
     def setup_connections(self):
         self.network_thread.user_online.connect(self.handle_user_online)
