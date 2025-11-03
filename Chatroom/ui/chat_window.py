@@ -4,7 +4,7 @@ import os
 import re
 import time
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
-from PyQt5.QtCore import pyqtSlot, Qt, QUrl, pyqtSignal
+from PyQt5.QtCore import pyqtSlot, Qt, QUrl, pyqtSignal, QThread
 from PyQt5.QtGui import QDesktopServices, QTextCursor, QTextImageFormat
 
 from qframelesswindow import FramelessWindow, StandardTitleBar
@@ -18,6 +18,7 @@ from ui.components.screenshot_tool import ScreenshotTool
 from ui.components.camera_widget import CameraDialog
 from ui.components.animated_text_browser import AnimatedTextBrowser
 from core.file_transfer import FileSender, FileReceiver
+from core import protocol
 
 class ChatWindow(FramelessWindow):
     send_file_request = pyqtSignal(str, str)
@@ -33,7 +34,7 @@ class ChatWindow(FramelessWindow):
         self.network_core = network_core
         self.screenshot_tool = None
         self.emoji_manager = EmojiManager()
-        self.pending_files = {}
+        self.pending_files = {}  # 存储格式: {(packet_no, file_id): {'path': ..., 'filename': ..., 'filesize': ...}}
 
         sender_name = self.target_user_info.get('sender', 'Unknown')
         self.setWindowTitle(f"与 {sender_name} 聊天")
@@ -238,8 +239,21 @@ class ChatWindow(FramelessWindow):
 
     @pyqtSlot(dict, str)
     def handle_file_request(self, msg, sender_ip):
-        parts = msg['extra_msg'].split(':')
-        filename, filesize = parts[0], parts[1]
+        # 解析标准IPMSG文件格式
+        # msg['file_list'] 已经在 network.py 中解析好了
+        file_list = msg.get('file_list', [])
+        if not file_list:
+            return
+        
+        # 取第一个文件（当前实现只支持单个文件）
+        file_info = file_list[0]
+        if not file_info:
+            return
+        
+        filename = file_info['filename']
+        filesize = file_info['filesize']
+        file_id = file_info['file_id']
+        packet_no = msg['packet_no']
         
         title = '文件传输请求'
         content = f"用户 {self.target_user_info['sender']} ({sender_ip}) 想传送文件:\n" \
@@ -269,14 +283,70 @@ class ChatWindow(FramelessWindow):
             except Exception:
                 pass
 
-            self.receiver_thread = FileReceiver("cache", filename, filesize)
-            self.receiver_thread.ready_to_receive.connect(
-                lambda port, save_path: self.send_file_ready.emit(port, msg['packet_no'], sender_ip)
-            )
-            self.receiver_thread.transfer_finished.connect(
-                lambda path: self.append_image(path, self.target_user_info['sender'], is_own=False)
-            )
-            self.receiver_thread.start()
+            # 启动接收线程（标准IPMSG协议：接收方连接发送方的2425端口）
+            # 保存文件信息以便后续使用
+            self._file_info = {
+                'packet_no': packet_no,
+                'file_id': file_id,
+                'sender_ip': sender_ip,
+                'filename': filename,
+                'filesize': filesize,
+                'save_path': None
+            }
+            
+            # 发送IPMSG_GETFILEDATA请求，然后连接发送方的2425端口
+            self.network_core.send_file_request_ready(packet_no, file_id, 0, sender_ip)
+            
+            # 标准IPMSG协议：接收方连接发送方的2425端口
+            # 创建TCP客户端连接发送方
+            import socket
+            import os
+            
+            def connect_and_receive():
+                try:
+                    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    client_socket.settimeout(10)
+                    client_socket.connect((sender_ip, protocol.IPMSG_DEFAULT_PORT))
+                    
+                    # 发送文件请求（标准IPMSG格式：{packetNo(hex)}:{fileId(hex)}:{offset(hex)}:）
+                    request = f"{packet_no:x}:{file_id:x}:0:"
+                    client_socket.sendall(request.encode('utf-8'))
+                    
+                    # 接收文件数据
+                    save_path = os.path.join("cache", filename)
+                    os.makedirs("cache", exist_ok=True)
+                    
+                    received_size = 0
+                    with open(save_path, 'wb') as f:
+                        while received_size < filesize:
+                            data = client_socket.recv(4096)
+                            if not data:
+                                break
+                            f.write(data)
+                            received_size += len(data)
+                    
+                    client_socket.close()
+                    
+                    if received_size == filesize:
+                        self.append_image(save_path, self.target_user_info['sender'], is_own=False)
+                    else:
+                        MessageBox("错误", f"文件接收不完整: {filename}", self).exec()
+                        
+                except Exception as e:
+                    MessageBox("错误", f"文件接收失败: {e}", self).exec()
+            
+            # 在单独的线程中执行
+            from PyQt5.QtCore import QThread
+            
+            class ReceiveThread(QThread):
+                finished = pyqtSignal()
+                
+                def run(self):
+                    connect_and_receive()
+                    self.finished.emit()
+            
+            self.receive_thread = ReceiveThread()
+            self.receive_thread.start()
 
         def on_reject():
             try:
@@ -299,16 +369,28 @@ class ChatWindow(FramelessWindow):
         w.yesSignal.connect(on_accept)
         w.cancelSignal.connect(on_reject)
         w.show()
+    
 
     @pyqtSlot(dict, str)
     def handle_file_ready(self, msg, sender_ip):
-        parts = msg['extra_msg'].split(':')
-        tcp_port, original_packet_no = parts[0], int(parts[1])
-        filepath = self.pending_files.get(original_packet_no)
-        if filepath:
-            self.sender_thread = FileSender(sender_ip, tcp_port, filepath)
-            self.sender_thread.start()
-            self.pending_files.pop(original_packet_no)
+        """
+        处理文件数据传输请求（标准IPMSG协议 IPMSG_GETFILEDATA）
+        注意：在标准IPMSG协议中，发送方已经在TCP服务器中处理了文件传输
+        这个方法可以保留用于向后兼容，但实际文件传输由TCP服务器处理
+        """
+        # 标准IPMSG协议中，文件传输流程：
+        # 1. 发送方发送 IPMSG_SENDMSG | IPMSG_FILEATTACHOPT（UDP），启动TCP服务器监听2425
+        # 2. 接收方发送 IPMSG_GETFILEDATA（UDP），然后连接发送方2425端口（TCP）
+        # 3. 发送方的TCP服务器处理连接，发送文件数据
+        
+        # 当前实现：TCP服务器已在network.py中启动并处理文件传输
+        # 这个方法可以用于记录日志或执行其他操作
+        packet_no = msg.get('file_packet_no')
+        file_id = msg.get('file_id')
+        
+        if packet_no is not None and file_id is not None:
+            print(f"收到文件传输请求: packet_no={packet_no}, file_id={file_id}")
+            # 文件传输已由TCP服务器处理，这里不需要额外操作
 
     def handle_link_clicked(self, url):
         if url.scheme() == 'file':

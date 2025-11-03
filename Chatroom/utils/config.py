@@ -50,6 +50,9 @@ class Config(QConfig):
     # user settings
     username = ConfigItem("User", "Username", "User", None)
     groupname = ConfigItem("User", "GroupName", "局域网", None)
+    display_name = ConfigItem("User", "DisplayName", "", None)  # 显示名称，为空则使用用户名
+    display_hostname = ConfigItem("User", "DisplayHostname", "", None)  # 自定义主机名，为空则使用系统主机名
+    auto_detect_hostname = ConfigItem("User", "AutoDetectHostname", True, BoolValidator())  # 是否自动检测主机名
 
 
 # Application metadata
@@ -71,4 +74,7 @@ config_dir = os.path.join(os.path.expanduser("~"), ".kylin")
 config_file = os.path.join(config_dir, "config.json")
 os.makedirs(config_dir, exist_ok=True)
 qconfig.load(config_file, cfg)
+
+# Export config file path for use in other modules
+CONFIG_FILE = config_file
 

@@ -4,14 +4,14 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTreeWidgetItem
 from PyQt5.QtCore import pyqtSlot, Qt
 from PyQt5.QtGui import QIcon
 from qfluentwidgets import (FluentWindow, NavigationItemPosition, 
-                            MessageBox, LineEdit, TreeWidget, BodyLabel, PushButton,
+                            LineEdit, TreeWidget, BodyLabel, PushButton,
                             FluentIcon as FIF)
 
 from core.network import NetworkCore
 from ui.chat_window import ChatWindow
 from ui.group_chat_dialog import GroupChatDialog
 from ui.about_interface import AboutInterface
-from utils.config import cfg, APP_NAME, AUTHOR
+from utils.config import cfg, APP_NAME, AUTHOR, CONFIG_FILE
 
 class ChatInterface(QWidget):
     """
@@ -69,7 +69,10 @@ class MainWindow(FluentWindow):
         self.chat_windows = {}
         self.username = cfg.get(cfg.username)
         self.groupname = cfg.get(cfg.groupname)
-        self.hostname = socket.gethostname()
+        # 获取主机名：优先使用配置的自定义主机名，否则使用系统主机名
+        system_hostname = socket.gethostname()
+        self.hostname = cfg.get(cfg.display_hostname) if cfg.get(cfg.display_hostname) else system_hostname
+        self.system_hostname = system_hostname  # 保存系统主机名用于显示
         
         # 創建子介面
         self.chat_interface = ChatInterface(self)
@@ -82,8 +85,15 @@ class MainWindow(FluentWindow):
         # 初始化導覽列
         self.initNavigation()
         
+        # 获取显示名称（如果配置了的话）
+        display_name_value = cfg.get(cfg.display_name)
+        actual_display_name = display_name_value if display_name_value else self.username
+        
         # 設置網路連接
         self.network_thread = NetworkCore(self.username, self.hostname, self.groupname)
+        # 如果配置了显示名称，更新网络线程的显示名称（用于发送消息）
+        if display_name_value:
+            self.network_thread.display_name = actual_display_name
         self.setup_connections()
         self.network_thread.start()
 
@@ -127,7 +137,7 @@ class MainWindow(FluentWindow):
             text=self.username,
             onClick=self.show_user_info,  # 添加点击事件
             selectable=False,
-            tooltip=f"{self.username}\n{self.hostname}\n点击查看用户信息",
+            tooltip=f"{self.username}\n{self.hostname}\n点击查看并配置用户信息",
             position=NavigationItemPosition.BOTTOM
         )
 
@@ -260,12 +270,27 @@ class MainWindow(FluentWindow):
         try:
             filesize = os.path.getsize(filepath)
             filename = os.path.basename(filepath)
-            self.network_thread.send_file_request(filename, filesize, target_ip)
+            # 生成文件ID
+            file_id = self.network_thread.get_file_id()
+            # 使用标准IPMSG协议发送文件请求，返回packet_no
+            packet_no = self.network_thread.send_file_request(filepath, filesize, file_id, target_ip)
             if target_ip in self.chat_windows:
-                packet_no = self.network_thread.get_packet_no()
-                self.chat_windows[target_ip].pending_files[packet_no] = filepath
+                # 存储文件信息，使用(packet_no, file_id)作为键
+                # 注意：文件已注册到FileTransferManager，这里只是记录一下
+                self.chat_windows[target_ip].pending_files[(packet_no, file_id)] = {
+                    'path': filepath,
+                    'filename': filename,
+                    'filesize': filesize
+                }
         except Exception as e:
-            MessageBox("错误", f"无法发送文件请求: {e}", self).exec()
+            from qfluentwidgets import InfoBar, InfoBarPosition
+            InfoBar.error(
+                title=self.tr('错误'),
+                content=self.tr(f'无法发送文件请求: {e}'),
+                duration=5000,
+                parent=self,
+                position=InfoBarPosition.TOP
+            )
 
     @pyqtSlot(QTreeWidgetItem, int)
     def open_chat_window_from_tree(self, item, column):
@@ -277,7 +302,14 @@ class MainWindow(FluentWindow):
     def open_group_chat_dialog(self):
         selected_item = self.chat_interface.user_tree_widget.currentItem()
         if not selected_item:
-            MessageBox("操作提示", "请先在列表中选择一个分组或一位用户。", self).exec()
+            from qfluentwidgets import InfoBar, InfoBarPosition
+            InfoBar.warning(
+                title=self.tr('操作提示'),
+                content=self.tr('请先在列表中选择一个分组或一位用户。'),
+                duration=3000,
+                parent=self,
+                position=InfoBarPosition.TOP
+            )
             return
             
         item_data = selected_item.data(0, Qt.UserRole)
@@ -298,7 +330,14 @@ class MainWindow(FluentWindow):
                 })
 
         if not recipients:
-            MessageBox("提示", "该分组中没有可发送消息的用户。", self).exec()
+            from qfluentwidgets import InfoBar, InfoBarPosition
+            InfoBar.warning(
+                title=self.tr('提示'),
+                content=self.tr('该分组中没有可发送消息的用户。'),
+                duration=3000,
+                parent=self,
+                position=InfoBarPosition.TOP
+            )
             return
 
         dialog = GroupChatDialog(self.username, group_name, recipients, self.network_thread, self)
@@ -306,44 +345,97 @@ class MainWindow(FluentWindow):
     
     @pyqtSlot()
     def show_user_info(self):
-        """显示用户信息对话框"""
+        """显示用户信息对话框（包含配置编辑功能）"""
         from qframelesswindow import FramelessDialog, StandardTitleBar
-        from qfluentwidgets import (VBoxLayout, SubtitleLabel, BodyLabel, 
-                                    PrimaryPushButton, isDarkTheme)
-        from PyQt5.QtWidgets import QWidget
+        from qfluentwidgets import (SubtitleLabel, BodyLabel, 
+                                    PrimaryPushButton, PushButton, LineEdit, CheckBox,
+                                    isDarkTheme, qconfig)
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
         
         dialog = FramelessDialog(self)
         dialog.setTitleBar(StandardTitleBar(dialog))
         dialog.titleBar.raise_()
-        dialog.setWindowTitle(self.tr('用户信息'))
-        dialog.setMinimumWidth(400)
-        dialog.setMinimumHeight(300)
+        dialog.setWindowTitle(self.tr('用户信息与配置'))
+        dialog.setMinimumWidth(480)
+        dialog.setMinimumHeight(500)
         
         # 创建内容widget
         content = QWidget()
-        layout = VBoxLayout(content)
+        layout = QVBoxLayout(content)
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
         
-        # 用户信息
-        title_label = SubtitleLabel(self.tr('当前用户信息'), content)
-        username_label = BodyLabel(f"{self.tr('用户名')}: {self.username}", content)
-        hostname_label = BodyLabel(f"{self.tr('主机名')}: {self.hostname}", content)
-        group_label = BodyLabel(f"{self.tr('组名')}: {self.groupname}", content)
-        online_count_label = BodyLabel(f"{self.tr('在线用户数')}: {len(self.users)}", content)
+        # 用户信息部分
+        info_title = SubtitleLabel(self.tr('当前用户信息'), content)
+        layout.addWidget(info_title)
         
-        layout.addWidget(title_label)
+        # 用户名配置
+        username_layout = QHBoxLayout()
+        username_label = BodyLabel(f"{self.tr('用户名')}: ", content)
+        username_input = LineEdit(content)
+        username_input.setText(self.username)
+        username_input.setPlaceholderText(self.tr('请输入用户名'))
+        username_layout.addWidget(username_label)
+        username_layout.addWidget(username_input, 1)
+        layout.addLayout(username_layout)
+        
+        # 显示名称配置
+        display_name_layout = QHBoxLayout()
+        display_name_label = BodyLabel(f"{self.tr('显示名称')}: ", content)
+        display_name_input = LineEdit(content)
+        display_name_value = cfg.get(cfg.display_name)
+        display_name_input.setText(display_name_value if display_name_value else "")
+        display_name_input.setPlaceholderText(self.tr('留空则使用用户名'))
+        display_name_layout.addWidget(display_name_label)
+        display_name_layout.addWidget(display_name_input, 1)
+        layout.addLayout(display_name_layout)
+        
+        # 主机名配置
+        hostname_layout = QHBoxLayout()
+        hostname_label = BodyLabel(f"{self.tr('主机名')}: ", content)
+        hostname_input = LineEdit(content)
+        hostname_input.setText(self.hostname)
+        hostname_input.setPlaceholderText(self.tr('留空则使用系统主机名'))
+        hostname_layout.addWidget(hostname_label)
+        hostname_layout.addWidget(hostname_input, 1)
+        layout.addLayout(hostname_layout)
+        
+        # 系统主机名显示（只读）
+        system_hostname_label = BodyLabel(f"{self.tr('系统主机名')}: {self.system_hostname}", content)
+        system_hostname_label.setStyleSheet("color: gray;")
+        layout.addWidget(system_hostname_label)
+        
+        # 组名配置
+        group_layout = QHBoxLayout()
+        group_label = BodyLabel(f"{self.tr('组名')}: ", content)
+        group_input = LineEdit(content)
+        group_input.setText(self.groupname)
+        group_input.setPlaceholderText(self.tr('请输入组名'))
+        group_layout.addWidget(group_label)
+        group_layout.addWidget(group_input, 1)
+        layout.addLayout(group_layout)
+        
+        # 自动检测主机名选项
+        auto_detect_checkbox = CheckBox(self.tr('自动检测主机名（取消勾选以使用自定义主机名）'), content)
+        auto_detect_checkbox.setChecked(cfg.get(cfg.auto_detect_hostname))
+        layout.addWidget(auto_detect_checkbox)
+        
         layout.addSpacing(10)
-        layout.addWidget(username_label)
-        layout.addWidget(hostname_label)
-        layout.addWidget(group_label)
+        
+        # 在线用户数（只读）
+        online_count_label = BodyLabel(f"{self.tr('在线用户数')}: {len(self.users)}", content)
         layout.addWidget(online_count_label)
+        
         layout.addStretch()
         
-        # 添加按钮
-        button = PrimaryPushButton(self.tr('确定'), content)
-        button.clicked.connect(dialog.accept)
-        layout.addWidget(button)
+        # 按钮
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        cancel_button = PushButton(self.tr('取消'), content)
+        save_button = PrimaryPushButton(self.tr('保存并重启'), content)
+        button_layout.addWidget(cancel_button)
+        button_layout.addWidget(save_button)
+        layout.addLayout(button_layout)
         
         # 设置对话框布局
         dialog_layout = QVBoxLayout(dialog)
@@ -357,5 +449,77 @@ class MainWindow(FluentWindow):
                     background-color: rgb(32, 32, 32);
                 }
             """)
+        
+        # 连接信号
+        def save_and_restart():
+            try:
+                # 保存配置
+                new_username = username_input.text().strip() or "User"
+                new_display_name = display_name_input.text().strip()
+                new_hostname = hostname_input.text().strip()
+                new_groupname = group_input.text().strip() or "局域网"
+                auto_detect = auto_detect_checkbox.isChecked()
+                
+                cfg.set(cfg.username, new_username)
+                cfg.set(cfg.display_name, new_display_name)
+                cfg.set(cfg.display_hostname, new_hostname if not auto_detect else "")
+                cfg.set(cfg.groupname, new_groupname)
+                cfg.set(cfg.auto_detect_hostname, auto_detect)
+                
+                # 保存配置文件
+                # 使用 qconfig.save() 保存配置
+                try:
+                    qconfig.save(cfg)
+                except Exception as save_error:
+                    # 如果 qconfig.save() 失败，尝试手动保存
+                    import json
+                    config_data = {}
+                    config_data["User"] = {
+                        "Username": new_username,
+                        "DisplayName": new_display_name,
+                        "DisplayHostname": new_hostname if not auto_detect else "",
+                        "GroupName": new_groupname,
+                        "AutoDetectHostname": auto_detect
+                    }
+                    # 保留其他配置项
+                    try:
+                        if os.path.exists(CONFIG_FILE):
+                            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                                existing_config = json.load(f)
+                                existing_config.update(config_data)
+                                config_data = existing_config
+                    except:
+                        pass
+                    
+                    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                        json.dump(config_data, f, ensure_ascii=False, indent=2)
+                
+                # 先关闭对话框
+                dialog.accept()
+                
+                # 使用非阻塞方式显示提示消息
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                InfoBar.success(
+                    title=self.tr('配置已保存'),
+                    content=self.tr('部分配置需要重启应用程序才能生效。'),
+                    duration=3000,  # 3秒后自动消失
+                    parent=self,
+                    position=InfoBarPosition.TOP
+                )
+                
+            except Exception as e:
+                # 如果保存失败，显示错误信息
+                dialog.accept()
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                InfoBar.error(
+                    title=self.tr('保存失败'),
+                    content=self.tr(f'保存配置时发生错误：{str(e)}'),
+                    duration=5000,  # 5秒后自动消失
+                    parent=self,
+                    position=InfoBarPosition.TOP
+                )
+        
+        cancel_button.clicked.connect(dialog.reject)
+        save_button.clicked.connect(save_and_restart)
         
         dialog.exec_()
