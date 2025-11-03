@@ -53,9 +53,9 @@ class Config(QConfig):
 
 
 # Application metadata
-YEAR = 2024
-AUTHOR = "Kylin Team"
-VERSION = "1.0.0"
+YEAR = 2025
+AUTHOR = "circLEMoon"
+VERSION = "1.7.0"
 APP_NAME = "Kylin Messenger"
 APP_DESCRIPTION = "A modern LAN messenger built with PyQt5 and Fluent Design"
 GITHUB_URL = "https://github.com/your-repo/kylin"

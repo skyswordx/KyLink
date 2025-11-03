@@ -65,22 +65,26 @@ class NetworkCore(QThread):
         command = msg['command']
         mode = command & protocol.IPMSG_MODE_MASK
         
-        # 仅在非文件传输消息中解析display_name和group_name
-        if mode not in [protocol.IPMSG_SEND_FILE_REQUEST, protocol.IPMSG_RECV_FILE_READY]:
-            extra_parts = msg['extra_msg'].split('\0', 1)
-            msg['display_name'] = extra_parts[0]
-            msg['group_name'] = extra_parts[1] if len(extra_parts) > 1 and extra_parts[1] else "我的好友"
-
         print(f"收到来自 {addr[0]} 的消息: {msg}")
 
         if mode == protocol.IPMSG_BR_ENTRY:
+            # 上线消息：extra_msg 格式为 "username\0groupname"
+            extra_parts = msg['extra_msg'].split('\0', 1)
+            msg['display_name'] = extra_parts[0]
+            msg['group_name'] = extra_parts[1] if len(extra_parts) > 1 and extra_parts[1] else "我的好友"
             self.user_online.emit(msg, addr[0])
             self.answer_entry(addr[0], self.port)
         elif mode == protocol.IPMSG_ANSENTRY:
+            # 回应上线消息：extra_msg 格式为 "username\0groupname"
+            extra_parts = msg['extra_msg'].split('\0', 1)
+            msg['display_name'] = extra_parts[0]
+            msg['group_name'] = extra_parts[1] if len(extra_parts) > 1 and extra_parts[1] else "我的好友"
             self.user_online.emit(msg, addr[0])
         elif mode == protocol.IPMSG_BR_EXIT:
             self.user_offline.emit(msg, addr[0])
         elif mode == protocol.IPMSG_SENDMSG:
+            # 文本消息：extra_msg 就是消息内容，不需要解析 display_name
+            # 发送者名称来自 msg['sender']，这是在协议解析时就已经提取的
             self.message_received.emit(msg, addr[0])
             if msg['command'] & protocol.IPMSG_SENDCHECKOPT:
                  self.send_receipt(addr[0], self.port, msg['packet_no'])

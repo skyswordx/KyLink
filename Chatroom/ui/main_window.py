@@ -29,7 +29,7 @@ class ChatInterface(QWidget):
         self.search_input.setClearButtonEnabled(True)
 
         self.user_tree_widget = TreeWidget(self)
-        self.user_tree_widget.setHeaderLabels(['在線好友'])
+        self.user_tree_widget.setHeaderLabels(['在线好友'])
 
         bottom_layout = QHBoxLayout()
         self.group_message_button = PushButton("群发消息", self)
@@ -214,7 +214,12 @@ class MainWindow(FluentWindow):
             
     @pyqtSlot(dict, str)
     def handle_message_received(self, msg, ip):
-        sender_name = msg.get('display_name', msg.get('sender', 'Unknown'))
+        # 优先从用户列表中获取显示名称，如果不在列表中则使用消息中的发送者名称
+        if ip in self.users:
+            sender_name = self.users[ip].get('display_name', self.users[ip].get('sender', 'Unknown'))
+        else:
+            sender_name = msg.get('sender', 'Unknown')
+        
         if ip not in self.chat_windows or not self.chat_windows[ip].isVisible():
             self.open_chat_window(ip)
         if ip in self.chat_windows:
