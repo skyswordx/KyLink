@@ -21,6 +21,8 @@ void registerMeta(const char* name)
     qRegisterMetaType<T>(name);
 }
 
+const QString kEmojiPrefix = QStringLiteral(":emoji:");
+
 } // namespace
 
 FeiqBackend::FeiqBackend(QObject* parent)
@@ -520,6 +522,15 @@ void FeiqBackend::emitTestUserFileOffer(const FeiqFileOffer& offer)
 bool FeiqBackend::handleTestUserSendText(const QString& text, QString* error)
 {
     Q_UNUSED(error);
+
+    if (text.startsWith(kEmojiPrefix) && text.endsWith(QLatin1Char(':'))) {
+        QTimer::singleShot(250, this, [this, text]() {
+            if (m_testUserEnabled) {
+                simulateTestUserIncomingText(text);
+            }
+        });
+        return true;
+    }
 
     QTimer::singleShot(250, this, [this, text]() {
         if (m_testUserEnabled) {

@@ -542,7 +542,12 @@ void MainWindow::appendTextToChat(const QString& targetIp, const QString& messag
     }
 
     if (m_chatWindows.contains(targetIp)) {
-        m_chatWindows[targetIp]->appendText(message, senderName, isOwn);
+        QString emoji;
+        if (ChatWindow::isEmojiMessage(message, &emoji)) {
+            m_chatWindows[targetIp]->appendEmoji(emoji, senderName, isOwn);
+        } else {
+            m_chatWindows[targetIp]->appendText(message, senderName, isOwn);
+        }
     }
 }
 

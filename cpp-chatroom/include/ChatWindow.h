@@ -8,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QString>
 #include <QUrl>
+#include <QVector>
 #include "FeiqTypes.h"
 
 class FeiqBackend;
@@ -30,6 +31,9 @@ public:
     void appendText(const QString& text, const QString& senderName, bool isOwn = false);
     void appendImage(const QString& imagePath, const QString& senderName, bool isOwn = false);
     void appendFileOffer(const FeiqFileOffer& offer, const QString& senderName);
+    void appendEmoji(const QString& emoji, const QString& senderName, bool isOwn = false);
+    static bool isEmojiMessage(const QString& message, QString* emojiOut = nullptr);
+
     void updateFellow(const FeiqFellowInfo& fellow);
 
 signals:
@@ -41,13 +45,16 @@ protected:
 private slots:
     void onSendClicked();
     void onFileClicked();
-    void onImageClicked();
+    void onEmojiClicked();
     void onScreenshotClicked();
     void onScreenshotTaken(const QString& filePath);
 
 private:
     void setupUI();
     QString formatTextForDisplay(const QString& text);
+    QString emojiTokenForIndex(int index) const;
+    bool sendEmojiByIndex(int index);
+    static const QVector<QString>& emojiList();
 
     QString m_ownUsername;
     FeiqFellowInfo m_targetFellow;
@@ -59,7 +66,7 @@ private:
     QTextEdit* m_messageInput;
     QPushButton* m_sendButton;
     QPushButton* m_fileButton;
-    QPushButton* m_imageButton;
+    QPushButton* m_emojiButton;
     QPushButton* m_screenshotButton;
     
     ScreenshotTool* m_screenshotTool;

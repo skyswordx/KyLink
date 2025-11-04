@@ -15,6 +15,8 @@
 #include <QApplication>
 #include <QTimer>
 #include <QDateTime>
+#include <QMenu>
+#include <QPoint>
 
 namespace
 {
@@ -28,6 +30,24 @@ QString displayNameOf(const FeiqFellowInfo& fellow)
         return fellow.host;
     }
     return fellow.ip;
+}
+
+const QString kEmojiPrefix = QStringLiteral(":emoji:");
+
+const QVector<QString>& emojiChoices()
+{
+    static const QVector<QString> emojis{
+        QStringLiteral("😀"),
+        QStringLiteral("😂"),
+        QStringLiteral("😍"),
+        QStringLiteral("😎"),
+        QStringLiteral("😭"),
+        QStringLiteral("👍"),
+        QStringLiteral("👏"),
+        QStringLiteral("🎉"),
+        QStringLiteral("❤️")
+    };
+    return emojis;
 }
 
 }
@@ -47,7 +67,7 @@ ChatWindow::ChatWindow(const QString& ownUsername,
     , m_messageInput(nullptr)
     , m_sendButton(nullptr)
     , m_fileButton(nullptr)
-    , m_imageButton(nullptr)
+    , m_emojiButton(nullptr)
     , m_screenshotButton(nullptr)
     , m_screenshotTool(nullptr)
 {
@@ -75,11 +95,11 @@ void ChatWindow::setupUI()
     
     // 工具栏按钮
     QHBoxLayout* toolbarLayout = new QHBoxLayout();
-    m_fileButton = new QPushButton("发送文件", this);
-    m_imageButton = new QPushButton("发送图片", this);
+    m_fileButton = new QPushButton("发送文件/图片", this);
+    m_emojiButton = new QPushButton("发送表情", this);
     m_screenshotButton = new QPushButton("截图", this);
     toolbarLayout->addWidget(m_fileButton);
-    toolbarLayout->addWidget(m_imageButton);
+    toolbarLayout->addWidget(m_emojiButton);
     toolbarLayout->addWidget(m_screenshotButton);
     toolbarLayout->addStretch();
     layout->addLayout(toolbarLayout);
@@ -98,7 +118,7 @@ void ChatWindow::setupUI()
     // 连接信号
     connect(m_sendButton, &QPushButton::clicked, this, &ChatWindow::onSendClicked);
     connect(m_fileButton, &QPushButton::clicked, this, &ChatWindow::onFileClicked);
-    connect(m_imageButton, &QPushButton::clicked, this, &ChatWindow::onImageClicked);
+    connect(m_emojiButton, &QPushButton::clicked, this, &ChatWindow::onEmojiClicked);
     connect(m_screenshotButton, &QPushButton::clicked, this, &ChatWindow::onScreenshotClicked);
     connect(closeButton, &QPushButton::clicked, this, &ChatWindow::close);
 }
@@ -152,34 +172,54 @@ void ChatWindow::onSendClicked()
 
 void ChatWindow::onFileClicked()
 {
-    QString filePath = QFileDialog::getOpenFileName(this, "选择要发送的文件");
-    if (!filePath.isEmpty()) {
-        emit sendFileRequest(m_targetIp, filePath);
+    QStringList filters;
+    filters << tr("所有文件 (*.*)")
+            << tr("图片文件 (*.png *.jpg *.jpeg *.bmp *.gif *.ico)")
+            << tr("常见文档 (*.pdf *.doc *.docx *.xls *.xlsx *.txt)");
+
+    QString filePath = QFileDialog::getOpenFileName(this,
+                                                    tr("选择要发送的文件"),
+                                                    QString(),
+                                                    filters.join(";;"));
+    if (filePath.isEmpty()) {
+        return;
     }
+
+    QFileInfo fileInfo(filePath);
+    QImageReader reader(filePath);
+    const bool isImage = reader.canRead();
+
+    if (isImage) {
+        appendImage(filePath, m_ownUsername, true);
+    } else {
+        appendText(tr("已发送文件: %1").arg(fileInfo.fileName()), m_ownUsername, true);
+    }
+
+    emit sendFileRequest(m_targetIp, filePath);
 }
 
-void ChatWindow::onImageClicked()
+void ChatWindow::onEmojiClicked()
 {
-    QStringList filters;
-    filters << "图片文件 (*.png *.jpg *.jpeg *.bmp *.gif *.ico)"
-            << "PNG文件 (*.png)"
-            << "JPEG文件 (*.jpg *.jpeg)"
-            << "所有文件 (*.*)";
-    
-    QString filePath = QFileDialog::getOpenFileName(this, "选择要发送的图片", 
-                                                     "", filters.join(";;"));
-    if (!filePath.isEmpty()) {
-        QFileInfo fileInfo(filePath);
-        // 检查是否为有效的图片文件
-        QImageReader reader(filePath);
-        if (!reader.canRead()) {
-            QMessageBox::warning(this, "错误", "无法读取该图片文件！");
-            return;
-        }
-        
-        // 显示图片并发送
-        appendImage(filePath, m_ownUsername, true);
-        emit sendFileRequest(m_targetIp, filePath);
+    QMenu menu(this);
+    const auto& emojis = emojiList();
+    for (int i = 0; i < emojis.size(); ++i) {
+        QAction* action = menu.addAction(emojis[i]);
+        action->setData(i);
+    }
+
+    QAction* chosen = menu.exec(m_emojiButton->mapToGlobal(QPoint(0, m_emojiButton->height())));
+    if (!chosen) {
+        return;
+    }
+
+    bool ok = false;
+    int index = chosen->data().toInt(&ok);
+    if (!ok) {
+        return;
+    }
+
+    if (sendEmojiByIndex(index)) {
+        appendEmoji(emojis.value(index), m_ownUsername, true);
     }
 }
 
@@ -270,6 +310,82 @@ void ChatWindow::appendFileOffer(const FeiqFileOffer& offer, const QString& send
                             .arg(offer.fileName)
                             .arg(offer.fileSize);
     appendText(text, senderName, false);
+}
+
+void ChatWindow::appendEmoji(const QString& emoji, const QString& senderName, bool isOwn)
+{
+    QString senderHtml;
+    if (isOwn) {
+        senderHtml = QString("<p style=\"color: green; margin-bottom: 0;\"><b>%1 (我):</b></p>")
+                         .arg(senderName);
+    } else {
+        senderHtml = QString("<p style=\"color: blue; margin-bottom: 0;\"><b>%1:</b></p>")
+                         .arg(senderName);
+    }
+
+    QString emojiHtml = QString("<div style=\"margin-left: 10px; font-size: 32px;\">%1</div>")
+                            .arg(emoji.toHtmlEscaped());
+    m_messageDisplay->append(senderHtml + emojiHtml);
+    m_messageDisplay->append("");
+    m_messageDisplay->ensureCursorVisible();
+}
+
+bool ChatWindow::isEmojiMessage(const QString& message, QString* emojiOut)
+{
+    if (!message.startsWith(kEmojiPrefix) || !message.endsWith(QLatin1Char(':'))) {
+        return false;
+    }
+
+    QString indexPart = message.mid(kEmojiPrefix.size());
+    indexPart.chop(1);
+
+    bool ok = false;
+    int index = indexPart.toInt(&ok);
+    if (!ok) {
+        return false;
+    }
+
+    const auto& emojis = emojiList();
+    if (index < 0 || index >= emojis.size()) {
+        return false;
+    }
+
+    if (emojiOut) {
+        *emojiOut = emojis[index];
+    }
+
+    return true;
+}
+
+QString ChatWindow::emojiTokenForIndex(int index) const
+{
+    return QStringLiteral(":emoji:%1:").arg(index);
+}
+
+bool ChatWindow::sendEmojiByIndex(int index)
+{
+    if (!m_backend) {
+        return false;
+    }
+
+    const auto& emojis = emojiList();
+    if (index < 0 || index >= emojis.size()) {
+        return false;
+    }
+
+    QString token = emojiTokenForIndex(index);
+    QString errorMessage;
+    if (m_backend->sendText(m_targetIp, token, QString(), &errorMessage)) {
+        return true;
+    }
+
+    QMessageBox::warning(this, tr("发送失败"), errorMessage.isEmpty() ? tr("无法发送表情") : errorMessage);
+    return false;
+}
+
+const QVector<QString>& ChatWindow::emojiList()
+{
+    return emojiChoices();
 }
 
 void ChatWindow::updateFellow(const FeiqFellowInfo& fellow)
