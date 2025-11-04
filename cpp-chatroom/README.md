@@ -10,18 +10,20 @@ cpp-chatroom/
 ├── cmake/                   # CMake工具链文件
 │   └── aarch64-linux-gnu.cmake
 ├── include/                 # 头文件
-│   ├── protocol.h          # IPMsg协议定义
-│   ├── NetworkManager.h    # 网络管理器（UDP）
-│   ├── FileTransferWorker.h # 文件传输工作线程（TCP）
+│   ├── FeiqBackend.h       # 协议控制器，封装 feiqlib
+│   ├── FeiqTypes.h         # UI 与协议层的数据结构
 │   ├── MainWindow.h        # 主窗口
-│   └── ChatWindow.h        # 聊天窗口
+│   ├── ChatWindow.h        # 聊天窗口
+│   └── GroupChatDialog.h   # 群发对话框
 ├── src/                     # 源文件
 │   ├── main.cpp
-│   ├── protocol.cpp
-│   ├── NetworkManager.cpp
-│   ├── FileTransferWorker.cpp
+│   ├── FeiqBackend.cpp
 │   ├── MainWindow.cpp
-│   └── ChatWindow.cpp
+│   ├── ChatWindow.cpp
+│   ├── GroupChatDialog.cpp
+│   ├── SettingsDialog.cpp
+│   └── AboutDialog.cpp
+├── feiqlib/                 # 来自 macOS 飞秋项目的协议与模型实现（参考 `feiq/feiqlib`）
 └── ui/                      # UI文件（可选，当前使用代码创建UI）
 ```
 
@@ -125,18 +127,18 @@ scp -r /opt/qt5-aarch64/lib/* user@rk3566:/path/to/target/lib/
 
 ### 已实现功能
 
-- ✅ UDP 广播通信（上线/下线/消息）
-- ✅ 用户列表发现和维护
-- ✅ 点对点聊天
-- ✅ TCP 文件传输（发送和接收）
-- ✅ 多线程文件传输（不阻塞 GUI）
-- ✅ 基本的错误处理
+- ✅ 基于 `feiqlib` 的飞秋协议栈（UDP 广播、TCP 文件传输）
+- ✅ UI/协议层彻底解耦，`FeiqBackend` 负责与协议交互
+- ✅ 在线用户发现、点对点聊天、窗口抖动提示
+- ✅ 文件发送与接收，自动提示保存位置
+- ✅ 群发消息（简单广播）
+- ✅ 内置回环测试用户（`127.0.0.2`），可在单机验证消息与文件流程
 
 ### 已知限制
 
-- 群发消息功能暂未实现
-- 文件传输进度显示未实现（信号已准备好）
-- UI 样式为基本 Qt 组件样式
+- 文件传输进度目前仅通过状态文本提示
+- 文件夹/图片特殊传输模式仍依赖对端兼容
+- UI 样式为基础 Qt 组件，尚未进行主题化
 
 ## 网络协议
 

@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDir>
 #include <QStandardPaths>
 #include "MainWindow.h"
@@ -6,6 +7,11 @@
 int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
+
+    QCoreApplication::setApplicationName(QStringLiteral("FeiQ Chatroom"));
+#ifdef PROJECT_VERSION_STR
+    QCoreApplication::setApplicationVersion(QStringLiteral(PROJECT_VERSION_STR));
+#endif
     
     // 确保缓存目录存在
     QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);

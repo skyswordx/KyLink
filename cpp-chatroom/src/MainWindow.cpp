@@ -1,13 +1,39 @@
 #include "MainWindow.h"
 #include "ChatWindow.h"
+#include "SettingsDialog.h"
+#include "AboutDialog.h"
+#include "GroupChatDialog.h"
+
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QCloseEvent>
 #include <QHostInfo>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QStandardPaths>
+#include <QDir>
 #include <QDebug>
+#include <QSettings>
+#include <QDateTime>
+#include <QInputDialog>
 #include <algorithm>
+
+namespace
+{
+
+QString displayNameOf(const FeiqFellowInfo& fellow)
+{
+    if (!fellow.name.trimmed().isEmpty()) {
+        return fellow.name;
+    }
+    if (!fellow.host.trimmed().isEmpty()) {
+        return fellow.host;
+    }
+    return fellow.ip;
+}
+
+}
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -15,21 +41,29 @@ MainWindow::MainWindow(QWidget* parent)
     , m_searchInput(nullptr)
     , m_statusLabel(nullptr)
     , m_groupMessageButton(nullptr)
-    , m_networkManager(nullptr)
+    , m_fileMenu(nullptr)
+    , m_helpMenu(nullptr)
+    , m_testMenu(nullptr)
+    , m_settingsAction(nullptr)
+    , m_exitAction(nullptr)
+    , m_aboutAction(nullptr)
+    , m_testSendMessageAction(nullptr)
+    , m_testSendFileAction(nullptr)
+    , m_backend(new FeiqBackend(this))
 {
-    // 获取系统信息
-    m_username = "CppUser";
-    m_hostname = QHostInfo::localHostName();
-    m_groupname = "开发组";
+    loadSettings();
     
     setupUI();
-    
-    // 启动网络管理器（必须在setupConnections之前）
-    m_networkManager = new NetworkManager(m_username, m_hostname, m_groupname, IPMsg::IPMSG_DEFAULT_PORT, this);
+    setupMenuBar();
+
+    m_backend->setIdentity(m_username, m_hostname);
     setupConnections();
-    
-    if (!m_networkManager->start()) {
-        QMessageBox::critical(this, "错误", "无法启动网络服务。端口可能已被占用。");
+
+    if (!m_backend->start()) {
+        QMessageBox::critical(this, tr("错误"), tr("无法启动飞秋协议服务，请检查网络设置。"));
+    } else {
+        m_statusLabel->setText(tr("在线用户: %1").arg(m_users.size()));
+        m_backend->enableLoopbackTestUser();
     }
 }
 
@@ -43,8 +77,8 @@ MainWindow::~MainWindow()
     }
     m_chatWindows.clear();
     
-    if (m_networkManager) {
-        m_networkManager->stop();
+    if (m_backend) {
+        m_backend->stop();
     }
 }
 
@@ -67,6 +101,7 @@ void MainWindow::setupUI()
     m_userTreeWidget = new QTreeWidget(this);
     m_userTreeWidget->setHeaderLabels(QStringList() << "在线好友");
     m_userTreeWidget->setIndentation(15);
+    m_userTreeWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
     layout->addWidget(m_userTreeWidget);
     
     // 底部栏
@@ -79,106 +114,201 @@ void MainWindow::setupUI()
     layout->addLayout(bottomLayout);
 }
 
+void MainWindow::setupMenuBar()
+{
+    m_fileMenu = menuBar()->addMenu("文件(&F)");
+    
+    m_settingsAction = new QAction("设置(&S)...", this);
+    m_settingsAction->setShortcut(QKeySequence::Preferences);
+    m_fileMenu->addAction(m_settingsAction);
+    
+    m_fileMenu->addSeparator();
+    
+    m_exitAction = new QAction("退出(&X)", this);
+    m_exitAction->setShortcut(QKeySequence::Quit);
+    m_fileMenu->addAction(m_exitAction);
+    
+    m_helpMenu = menuBar()->addMenu("帮助(&H)");
+    m_aboutAction = new QAction("关于(&A)...", this);
+    m_helpMenu->addAction(m_aboutAction);
+
+    m_testMenu = menuBar()->addMenu("测试(&T)");
+    m_testSendMessageAction = new QAction("测试用户发送消息", this);
+    m_testSendFileAction = new QAction("测试用户发送文件", this);
+    m_testMenu->addAction(m_testSendMessageAction);
+    m_testMenu->addAction(m_testSendFileAction);
+    
+    connect(m_settingsAction, &QAction::triggered, this, &MainWindow::onSettingsClicked);
+    connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
+    connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAboutClicked);
+    connect(m_testSendMessageAction, &QAction::triggered, this, &MainWindow::onTestUserSendMessage);
+    connect(m_testSendFileAction, &QAction::triggered, this, &MainWindow::onTestUserSendFile);
+}
+
+void MainWindow::loadSettings()
+{
+    QSettings settings("FeiQChatroom", "Settings");
+    
+    m_username = settings.value("username", "CppUser").toString();
+    m_hostname = settings.value("hostname", "").toString();
+    m_groupname = settings.value("groupname", "我的好友").toString();
+    
+    if (m_hostname.isEmpty()) {
+        m_hostname = QHostInfo::localHostName();
+    }
+}
+
 void MainWindow::setupConnections()
 {
     // 网络信号
-    connect(m_networkManager, &NetworkManager::userOnline, 
-            this, &MainWindow::handleUserOnline);
-    connect(m_networkManager, &NetworkManager::userOffline, 
-            this, &MainWindow::handleUserOffline);
-    connect(m_networkManager, &NetworkManager::messageReceived, 
-            this, &MainWindow::handleMessageReceived);
-    connect(m_networkManager, &NetworkManager::fileRequestReceived, 
-            this, &MainWindow::handleFileRequestReceived);
-    connect(m_networkManager, &NetworkManager::fileReceiverReady, 
-            this, &MainWindow::handleFileReceiverReady);
-    
+    connect(m_backend, &FeiqBackend::fellowUpdated, this, &MainWindow::handleFellowUpdated);
+    connect(m_backend, &FeiqBackend::messageReceived, this, &MainWindow::handleMessageReceived);
+    connect(m_backend, &FeiqBackend::sendTimeout, this, &MainWindow::handleSendTimeout);
+    connect(m_backend, &FeiqBackend::fileTaskUpdated, this, &MainWindow::handleFileTaskUpdated);
+    connect(m_backend, &FeiqBackend::engineError, this, [this](const QString& message) {
+        QMessageBox::critical(this, tr("错误"), message);
+    });
+
     // UI信号
-    connect(m_userTreeWidget, &QTreeWidget::itemDoubleClicked, 
+    connect(m_userTreeWidget, &QTreeWidget::itemDoubleClicked,
             this, &MainWindow::onUserItemDoubleClicked);
+    connect(m_userTreeWidget, &QTreeWidget::itemActivated,
+            this, &MainWindow::onUserItemActivated);
     connect(m_searchInput, &QLineEdit::textChanged, 
             this, &MainWindow::onSearchTextChanged);
     connect(m_groupMessageButton, &QPushButton::clicked, 
             this, &MainWindow::onGroupMessageClicked);
 }
 
-void MainWindow::handleUserOnline(const IPMsg::MessagePacket& msg, const QString& ip)
+void MainWindow::handleFellowUpdated(const FeiqFellowInfo& fellow)
 {
-    IPMsg::MessagePacket userInfo = msg;
-    QString displayName = userInfo.displayName.isEmpty() ? userInfo.sender : userInfo.displayName;
-    
-    if (!m_users.contains(ip) || 
-        m_users[ip].displayName != displayName || 
-        m_users[ip].groupName != userInfo.groupName) {
-        qDebug() << QString("用户上线或更新: %1 @ %2 in group '%3'")
-            .arg(displayName).arg(ip).arg(userInfo.groupName);
-        m_users[ip] = userInfo;
-        updateUserList();
+    if (fellow.ip.isEmpty()) {
+        return;
     }
-}
 
-void MainWindow::handleUserOffline(const IPMsg::MessagePacket& msg, const QString& ip)
-{
-    if (m_users.contains(ip)) {
-        QString displayName = m_users[ip].displayName.isEmpty() ? 
-            m_users[ip].sender : m_users[ip].displayName;
-        qDebug() << QString("用户下线: %1 @ %2").arg(displayName).arg(ip);
-        
-        if (m_chatWindows.contains(ip)) {
-            m_chatWindows[ip]->close();
+    if (fellow.online) {
+        m_users[fellow.ip] = fellow;
+    } else {
+        if (m_chatWindows.contains(fellow.ip)) {
+            m_chatWindows[fellow.ip]->appendText(tr("对方已离线"), displayNameOf(fellow));
+            m_chatWindows[fellow.ip]->close();
         }
-        
-        m_users.remove(ip);
-        updateUserList();
+        m_users.remove(fellow.ip);
     }
+
+    refreshUserNode(fellow);
 }
 
-void MainWindow::handleMessageReceived(const IPMsg::MessagePacket& msg, const QString& ip)
+void MainWindow::handleMessageReceived(const FeiqMessage& message)
 {
-    QString senderName = msg.displayName.isEmpty() ? msg.sender : msg.displayName;
-    qDebug() << QString("收到来自 %1 的消息: %2").arg(senderName).arg(msg.extraMsg);
-    
+    const QString ip = message.fellow.ip;
+    const QString senderName = displayNameOf(message.fellow);
+
     if (!m_chatWindows.contains(ip) || !m_chatWindows[ip]->isVisible()) {
         openChatWindow(ip);
     }
-    
-    if (m_chatWindows.contains(ip)) {
-        m_chatWindows[ip]->appendMessage(msg.extraMsg, senderName);
-        m_chatWindows[ip]->activateWindow();
+
+    for (const auto& content : message.contents) {
+        switch (content.type) {
+        case FeiqContentType::Text:
+            appendTextToChat(ip, content.text, senderName, false);
+            break;
+        case FeiqContentType::File:
+            appendFileOfferToChat(ip, content.file, senderName);
+            promptFileDownload(ip, content.file, senderName);
+            break;
+        case FeiqContentType::Knock:
+            appendTextToChat(ip, tr("对方向你发起了窗口抖动"), senderName, false);
+            break;
+        case FeiqContentType::Image:
+            appendTextToChat(ip, tr("收到图片，请对方以文件形式发送"), senderName, false);
+            break;
+        case FeiqContentType::Id:
+            break;
+        }
     }
 }
 
-void MainWindow::handleFileRequestReceived(const IPMsg::MessagePacket& msg, const QString& ip)
+void MainWindow::handleSendTimeout(const FeiqFellowInfo& fellow, const QString& description)
 {
-    if (!m_chatWindows.contains(ip) || !m_chatWindows[ip]->isVisible()) {
-        openChatWindow(ip);
-    }
-    
-    if (m_chatWindows.contains(ip)) {
-        m_chatWindows[ip]->activateWindow();
-        m_chatWindows[ip]->handleFileRequest(msg, ip);
-    }
+    appendTextToChat(fellow.ip, description, m_username, true);
 }
 
-void MainWindow::handleFileReceiverReady(const IPMsg::MessagePacket& msg, const QString& ip)
+void MainWindow::handleFileTaskUpdated(const FeiqFileTaskInfo& info)
 {
-    if (m_chatWindows.contains(ip)) {
-        m_chatWindows[ip]->handleFileReady(msg, ip);
+    const QString ip = info.fellow.ip;
+    if (ip.isEmpty()) {
+        return;
+    }
+
+    QString actor = info.upload ? m_username : displayNameOf(info.fellow);
+    bool isOwn = info.upload;
+
+    switch (info.state) {
+    case FeiqFileTaskState::Running:
+        // We could update progress in future.
+        break;
+    case FeiqFileTaskState::Finished: {
+        QString message;
+        if (info.upload) {
+            message = tr("文件已发送: %1").arg(info.file.fileName);
+        } else {
+            const QString pathHint = info.file.localPath.isEmpty()
+                ? info.file.fileName
+                : info.file.localPath;
+            message = tr("文件已接收: %1").arg(pathHint);
+        }
+        appendTextToChat(ip, message, actor, isOwn);
+        break;
+    }
+    case FeiqFileTaskState::Error:
+        appendTextToChat(ip,
+                         tr("文件传输失败: %1").arg(info.detail.isEmpty() ? info.file.fileName : info.detail),
+                         actor,
+                         isOwn);
+        break;
+    case FeiqFileTaskState::Canceled:
+        appendTextToChat(ip, tr("文件传输已取消: %1").arg(info.file.fileName), actor, isOwn);
+        break;
+    case FeiqFileTaskState::NotStart:
+        break;
     }
 }
 
 void MainWindow::onUserItemDoubleClicked(QTreeWidgetItem* item, int column)
 {
     Q_UNUSED(column);
-    
+
     QVariant data = item->data(0, Qt::UserRole);
-    if (data.isValid()) {
-        QMap<QString, QVariant> itemData = data.toMap();
-        if (itemData["type"].toString() == "user") {
-            QString ip = itemData["ip"].toString();
-            openChatWindow(ip);
-        }
+    if (!data.isValid()) {
+        return;
     }
+
+    QMap<QString, QVariant> itemData = data.toMap();
+    if (itemData["type"].toString() != "user") {
+        return;
+    }
+
+    QString ip = itemData.value("ip").toString();
+    openChatWindow(ip);
+}
+
+void MainWindow::onUserItemActivated(QTreeWidgetItem* item, int column)
+{
+    Q_UNUSED(column);
+
+    QVariant data = item->data(0, Qt::UserRole);
+    if (!data.isValid()) {
+        return;
+    }
+
+    QMap<QString, QVariant> itemData = data.toMap();
+    if (itemData["type"].toString() != "user") {
+        return;
+    }
+
+    QString ip = itemData.value("ip").toString();
+    openChatWindow(ip);
 }
 
 void MainWindow::onSearchTextChanged(const QString& text)
@@ -189,7 +319,28 @@ void MainWindow::onSearchTextChanged(const QString& text)
 
 void MainWindow::onGroupMessageClicked()
 {
-    QMessageBox::information(this, "提示", "群发消息功能暂未实现");
+    QTreeWidgetItem* selectedItem = m_userTreeWidget->currentItem();
+    if (!selectedItem) {
+        QMessageBox::warning(this, "操作提示", "请先在列表中选择一个分组或一位用户。");
+        return;
+    }
+    
+    QString groupName = tr("在线好友");
+
+    QList<QPair<QString, QString>> recipients;
+    for (const auto& key : m_users.keys()) {
+        recipients.append(qMakePair(key, displayNameOf(m_users[key])));
+    }
+
+    if (recipients.isEmpty()) {
+        QMessageBox::information(this, "提示", "该分组中没有可发送消息的用户。");
+        return;
+    }
+    
+    GroupChatDialog* dialog = new GroupChatDialog(m_username, groupName, recipients,
+                                                  m_backend, this, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->exec();
 }
 
 void MainWindow::onSendFileRequest(const QString& targetIp, const QString& filePath)
@@ -200,68 +351,40 @@ void MainWindow::onSendFileRequest(const QString& targetIp, const QString& fileP
         return;
     }
     
-    qint64 fileSize = fileInfo.size();
-    QString filename = fileInfo.fileName();
-    
-    // 发送UDP文件请求
-    m_networkManager->sendFileRequest(filename, fileSize, targetIp);
-    
-    // 将文件信息存入对应聊天窗口的待发送列表
-    if (m_chatWindows.contains(targetIp)) {
-        quint32 packetNo = m_networkManager->getPacketNo();
-        m_chatWindows[targetIp]->setPendingFile(packetNo, filePath);
-        qDebug() << QString("已暂存待发送文件: %1 (包ID: %2)").arg(filePath).arg(packetNo);
+    QString errorMessage;
+    if (!m_backend->sendFiles(targetIp, QStringList{filePath}, &errorMessage)) {
+        QMessageBox::critical(this, tr("错误"), errorMessage);
+    } else if (m_chatWindows.contains(targetIp)) {
+        m_chatWindows[targetIp]->appendText(QString("已请求发送文件: %1").arg(fileInfo.fileName()),
+                                            m_username,
+                                            true);
     }
 }
 
 void MainWindow::updateUserList()
 {
     m_userTreeWidget->clear();
-    
-    QMap<QString, QTreeWidgetItem*> groups;
+
+    QTreeWidgetItem* groupItem = new QTreeWidgetItem(m_userTreeWidget);
+    groupItem->setText(0, tr("在线好友 [%1]").arg(m_users.size()));
+    groupItem->setData(0, Qt::UserRole, QVariant::fromValue(QString("group")));
+
     QList<QString> sortedIps = m_users.keys();
     std::sort(sortedIps.begin(), sortedIps.end(), [this](const QString& a, const QString& b) {
-        QString groupA = m_users[a].groupName.isEmpty() ? "我的好友" : m_users[a].groupName;
-        QString groupB = m_users[b].groupName.isEmpty() ? "我的好友" : m_users[b].groupName;
-        if (groupA != groupB) {
-            return groupA < groupB;
-        }
-        QString nameA = m_users[a].displayName.isEmpty() ? m_users[a].sender : m_users[a].displayName;
-        QString nameB = m_users[b].displayName.isEmpty() ? m_users[b].sender : m_users[b].displayName;
-        return nameA < nameB;
+        return displayNameOf(m_users[a]) < displayNameOf(m_users[b]);
     });
-    
+
     for (const QString& ip : sortedIps) {
-        const IPMsg::MessagePacket& userInfo = m_users[ip];
-        QString groupName = userInfo.groupName.isEmpty() ? "我的好友" : userInfo.groupName;
-        QString displayName = userInfo.displayName.isEmpty() ? userInfo.sender : userInfo.displayName;
-        
-        if (!groups.contains(groupName)) {
-            QTreeWidgetItem* groupItem = new QTreeWidgetItem(m_userTreeWidget);
-            groupItem->setText(0, QString("%1 [0]").arg(groupName));
-            QMap<QString, QVariant> groupData;
-            groupData["type"] = "group";
-            groupData["name"] = groupName;
-            groupItem->setData(0, Qt::UserRole, groupData);
-            groups[groupName] = groupItem;
-        }
-        
-        QTreeWidgetItem* groupItem = groups[groupName];
+        const auto& fellow = m_users[ip];
         QTreeWidgetItem* userItem = new QTreeWidgetItem(groupItem);
-        userItem->setText(0, QString("%1 (%2)").arg(displayName).arg(ip));
+        userItem->setText(0, QString("%1 (%2)").arg(displayNameOf(fellow), ip));
         QMap<QString, QVariant> userData;
         userData["type"] = "user";
         userData["ip"] = ip;
         userItem->setData(0, Qt::UserRole, userData);
     }
-    
-    // 更新分组计数
-    for (auto it = groups.begin(); it != groups.end(); ++it) {
-        int count = it.value()->childCount();
-        it.value()->setText(0, QString("%1 [%2]").arg(it.key()).arg(count));
-    }
-    
-    m_userTreeWidget->expandAll();
+
+    m_userTreeWidget->expandItem(groupItem);
     m_statusLabel->setText(QString("在线用户: %1").arg(m_users.size()));
     filterUserList();
 }
@@ -288,37 +411,23 @@ void MainWindow::filterUserList()
         
         groupItem->setHidden(!hasVisibleChild);
     }
+    
 }
 
 void MainWindow::openChatWindow(const QString& targetIp)
 {
-    if (!m_users.contains(targetIp)) {
-        qWarning() << QString("目标IP %1 不在当前用户列表中").arg(targetIp);
-        return;
-    }
-    
     if (m_chatWindows.contains(targetIp) && m_chatWindows[targetIp]->isVisible()) {
         m_chatWindows[targetIp]->activateWindow();
         return;
     }
     
-    IPMsg::MessagePacket targetUserInfo = m_users[targetIp];
-    ChatWindow* chatWin = new ChatWindow(m_username, targetUserInfo, targetIp, 
-                                         m_networkManager, this);
-    
-    // 连接文件传输信号
-    connect(chatWin, &ChatWindow::sendFileRequest, 
-            this, &MainWindow::onSendFileRequest);
-    
-    connect(chatWin, &ChatWindow::sendFileReady, 
-            [this](quint16 port, quint32 packetNo, const QString& ip) {
-                m_networkManager->sendFileReadySignal(port, packetNo, ip);
-            });
-    
-    connect(chatWin, &ChatWindow::destroyed, [this, targetIp]() {
-        m_chatWindows.remove(targetIp);
-    });
-    
+    FeiqFellowInfo fellow = m_users.value(targetIp, FeiqFellowInfo{targetIp, targetIp, QString(), QString(), true});
+    ChatWindow* chatWin = new ChatWindow(m_username, fellow, m_backend, this, nullptr);
+
+    chatWin->setAttribute(Qt::WA_DeleteOnClose);
+
+    ensureChatWindowSignals(chatWin);
+
     m_chatWindows[targetIp] = chatWin;
     chatWin->show();
 }
@@ -331,10 +440,177 @@ void MainWindow::closeEvent(QCloseEvent* event)
         }
     }
     
-    if (m_networkManager) {
-        m_networkManager->stop();
+    if (m_backend) {
+        m_backend->stop();
     }
     
     event->accept();
+}
+
+void MainWindow::onSettingsClicked()
+{
+    SettingsDialog* dialog = new SettingsDialog(this);
+    
+    // 设置当前值
+    dialog->setUsername(m_username);
+    dialog->setHostname(m_hostname);
+    dialog->setGroupname(m_groupname);
+    
+    if (dialog->exec() == QDialog::Accepted) {
+        // 保存设置
+        m_username = dialog->username();
+        m_hostname = dialog->hostname();
+        m_groupname = dialog->groupname();
+        
+        if (m_backend) {
+            m_backend->stop();
+            m_backend->setIdentity(m_username, m_hostname);
+            if (!m_backend->start()) {
+                QMessageBox::critical(this, tr("错误"), tr("无法重新启动飞秋协议服务。"));
+            }
+        }
+
+        m_users.clear();
+        updateUserList();
+    }
+    
+    dialog->deleteLater();
+}
+
+void MainWindow::onAboutClicked()
+{
+    AboutDialog* dialog = new AboutDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->exec();
+}
+
+void MainWindow::onTestUserSendMessage()
+{
+    if (!m_backend) {
+        return;
+    }
+
+    bool ok = false;
+    QString text = QInputDialog::getText(this,
+                                         tr("测试用户消息"),
+                                         tr("输入测试用户要发送的消息:"),
+                                         QLineEdit::Normal,
+                                         tr("你好！这是测试用户。"),
+                                         &ok);
+    if (!ok) {
+        return;
+    }
+
+    text = text.trimmed();
+    if (text.isEmpty()) {
+        return;
+    }
+
+    m_backend->simulateTestUserIncomingText(text);
+}
+
+void MainWindow::onTestUserSendFile()
+{
+    if (!m_backend) {
+        return;
+    }
+
+    bool ok = false;
+    QString fileName = QInputDialog::getText(this,
+                                             tr("测试用户文件"),
+                                             tr("输入测试文件名:"),
+                                             QLineEdit::Normal,
+                                             tr("loopback.txt"),
+                                             &ok);
+    if (!ok) {
+        return;
+    }
+
+    fileName = fileName.trimmed();
+    if (fileName.isEmpty()) {
+        fileName = QStringLiteral("loopback.txt");
+    }
+
+    m_backend->simulateTestUserIncomingFile(fileName);
+}
+
+void MainWindow::appendTextToChat(const QString& targetIp, const QString& message,
+                                  const QString& senderName, bool isOwn)
+{
+    if (!m_chatWindows.contains(targetIp)) {
+        openChatWindow(targetIp);
+    }
+
+    if (m_chatWindows.contains(targetIp)) {
+        m_chatWindows[targetIp]->appendText(message, senderName, isOwn);
+    }
+}
+
+void MainWindow::appendFileOfferToChat(const QString& targetIp, const FeiqFileOffer& offer,
+                                       const QString& senderName)
+{
+    if (!m_chatWindows.contains(targetIp)) {
+        openChatWindow(targetIp);
+    }
+
+    if (m_chatWindows.contains(targetIp)) {
+        m_chatWindows[targetIp]->appendFileOffer(offer, senderName);
+    }
+}
+
+void MainWindow::promptFileDownload(const QString& targetIp, const FeiqFileOffer& offer,
+                                    const QString& senderName)
+{
+    auto response = QMessageBox::question(
+        this,
+        tr("接收文件"),
+        tr("%1 想要发送文件 %2 (%3 字节)。是否接收？")
+            .arg(senderName)
+            .arg(offer.fileName)
+            .arg(offer.fileSize));
+
+    if (response != QMessageBox::Yes) {
+        return;
+    }
+
+    QString defaultDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    if (defaultDir.isEmpty()) {
+        defaultDir = QDir::homePath();
+    }
+
+    QString savePath = QFileDialog::getSaveFileName(
+        this,
+        tr("保存文件"),
+        QDir(defaultDir).filePath(offer.fileName));
+
+    if (savePath.isEmpty()) {
+        return;
+    }
+
+    QString errorMessage;
+    if (!m_backend->acceptFile(targetIp, offer.packetNo, offer.fileId, savePath, &errorMessage)) {
+        QMessageBox::critical(this, tr("错误"), errorMessage);
+    }
+}
+
+void MainWindow::refreshUserNode(const FeiqFellowInfo& fellow)
+{
+    Q_UNUSED(fellow);
+    updateUserList();
+}
+
+void MainWindow::ensureChatWindowSignals(ChatWindow* chatWindow)
+{
+    connect(chatWindow, &ChatWindow::sendFileRequest,
+            this, &MainWindow::onSendFileRequest);
+
+    connect(chatWindow, &ChatWindow::destroyed, this, [this, chatWindow]() {
+        for (auto it = m_chatWindows.begin(); it != m_chatWindows.end(); ++it) {
+            if (it.value() == chatWindow) {
+                m_chatWindows.erase(it);
+                break;
+            }
+        }
+    });
 }
 
