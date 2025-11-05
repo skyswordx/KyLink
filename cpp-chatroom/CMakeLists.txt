@@ -9,8 +9,8 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOMOC ON)
 
-# 查找Qt5 (要求5.12或更高版本，兼容5.12.8)
-find_package(Qt5 5.12 REQUIRED COMPONENTS Core Gui Widgets Network)
+# 查找Qt5 (要求 5.12.8 或更高版本，当前在 Ubuntu 上链接 5.12.8)
+find_package(Qt5 5.12.8 REQUIRED COMPONENTS Core Gui Widgets Network)
 find_package(Threads REQUIRED)
 
 # 设置输出目录

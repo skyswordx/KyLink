@@ -30,7 +30,7 @@ cpp-chatroom/
 ## 依赖要求
 
 - CMake >= 3.16
-- Qt5 >= 5.15（包含以下组件：Core, Gui, Widgets, Network）
+- Qt5 >= 5.12.8（包含以下组件：Core, Gui, Widgets, Network；当前构建验证使用 5.12.8）
 - C++17 兼容的编译器
 
 ### Ubuntu 20.04 安装依赖
@@ -44,7 +44,7 @@ sudo apt-get install cmake qt5-default qtbase5-dev qtbase5-dev-tools
 
 1. 安装 CMake: https://cmake.org/download/
 2. 安装 Qt5: https://www.qt.io/download-qt-installer
-   - 选择 Qt 5.15.x 版本
+   - 选择 Qt 5.12.8 或同系列 5.12.x 版本
    - 确保安装 Qt5Core, Qt5Gui, Qt5Widgets, Qt5Network 组件
 3. 将 Qt 的 bin 目录添加到 PATH 环境变量
 
@@ -78,7 +78,7 @@ cmake --build .
 1. 打开 Qt Creator
 2. 选择 File -> Open File or Project
 3. 选择 `cpp-chatroom/CMakeLists.txt`
-4. 配置构建套件（选择 Qt5.15）
+4. 配置构建套件（选择 Qt 5.12.8 或对应 5.12.x 套件）
 5. 点击构建
 
 ### 3. 交叉编译到 RK3566 (aarch64-linux-gnu)
@@ -110,6 +110,8 @@ make
 ```
 
 编译完成后，可执行文件位于 `build-aarch64/bin/FeiQChatroom`
+
+> 更详细的 Windows x64 与 RK3566 交叉编译准备流程，请查看 `CROSS_COMPILE_PREP.md`。
 
 #### 部署到 RK3566
 

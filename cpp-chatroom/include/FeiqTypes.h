@@ -73,3 +73,5 @@ Q_DECLARE_METATYPE(FeiqFileTaskInfo)
 
 #endif // FEIQTYPES_H
 
+
+
