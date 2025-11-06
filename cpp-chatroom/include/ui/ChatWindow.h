@@ -9,7 +9,7 @@
 #include <QString>
 #include <QUrl>
 #include <QVector>
-#include "FeiqTypes.h"
+#include "domain/FeiqTypes.h"
 
 class FeiqBackend;
 

@@ -12,8 +12,8 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
-#include "FeiqBackend.h"
-#include "FeiqTypes.h"
+#include "backend/FeiqBackend.h"
+#include "domain/FeiqTypes.h"
 
 class ChatWindow;
 class SettingsDialog;

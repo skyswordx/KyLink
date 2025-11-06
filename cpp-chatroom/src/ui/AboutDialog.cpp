@@ -1,4 +1,4 @@
-#include "AboutDialog.h"
+#include "ui/AboutDialog.h"
 #include <QTextEdit>
 #include <QPushButton>
 #include <QScrollArea>

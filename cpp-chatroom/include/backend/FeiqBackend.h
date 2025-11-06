@@ -7,7 +7,7 @@
 #include <QHash>
 #include <QByteArray>
 
-#include "FeiqTypes.h"
+#include "domain/FeiqTypes.h"
 #include "feiqengine.h" // 源自 feiq/feiqlib (Mac 飞秋) 项目
 
 class FeiqBackend : public QObject, public IFeiqView

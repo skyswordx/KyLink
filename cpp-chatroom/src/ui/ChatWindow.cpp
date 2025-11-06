@@ -1,7 +1,7 @@
-#include "ChatWindow.h"
-#include "MainWindow.h"
-#include "ScreenshotTool.h"
-#include "FeiqBackend.h"
+#include "ui/ChatWindow.h"
+#include "ui/MainWindow.h"
+#include "ui/ScreenshotTool.h"
+#include "backend/FeiqBackend.h"
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QCloseEvent>

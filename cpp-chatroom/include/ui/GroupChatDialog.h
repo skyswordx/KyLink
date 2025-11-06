@@ -7,7 +7,7 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include "FeiqTypes.h"
+#include "domain/FeiqTypes.h"
 
 class FeiqBackend;
 class MainWindow;

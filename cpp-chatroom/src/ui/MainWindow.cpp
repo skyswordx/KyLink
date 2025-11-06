@@ -1,8 +1,8 @@
-#include "MainWindow.h"
-#include "ChatWindow.h"
-#include "SettingsDialog.h"
-#include "AboutDialog.h"
-#include "GroupChatDialog.h"
+#include "ui/MainWindow.h"
+#include "ui/ChatWindow.h"
+#include "ui/SettingsDialog.h"
+#include "ui/AboutDialog.h"
+#include "ui/GroupChatDialog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>

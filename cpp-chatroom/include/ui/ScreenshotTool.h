@@ -7,6 +7,7 @@
 #include <QMouseEvent>
 #include <QGuiApplication>
 #include <QTimer>
+#include <QString>
 
 class ScreenshotTool : public QWidget
 {
@@ -39,6 +40,7 @@ private:
     QPoint m_endPoint;
     bool m_isSelecting;
     bool m_screenCaptured;
+    QString m_lastError;
 };
 
 #endif // SCREENSHOTTOOL_H

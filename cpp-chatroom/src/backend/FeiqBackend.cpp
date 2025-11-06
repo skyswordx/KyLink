@@ -1,4 +1,4 @@
-#include "FeiqBackend.h"
+#include "backend/FeiqBackend.h"
 
 #include <QMetaObject>
 #include <QMetaType>

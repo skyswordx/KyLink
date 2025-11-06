@@ -1,6 +1,6 @@
-#include "GroupChatDialog.h"
-#include "MainWindow.h"
-#include "FeiqBackend.h"
+#include "ui/GroupChatDialog.h"
+#include "ui/MainWindow.h"
+#include "backend/FeiqBackend.h"
 #include <QMessageBox>
 
 GroupChatDialog::GroupChatDialog(const QString& ownUsername,

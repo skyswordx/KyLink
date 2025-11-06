@@ -2,7 +2,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QStandardPaths>
-#include "MainWindow.h"
+#include "ui/MainWindow.h"
 
 int main(int argc, char* argv[])
 {

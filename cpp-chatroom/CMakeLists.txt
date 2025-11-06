@@ -21,7 +21,6 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # 包含目录
 include_directories(
     ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/feiqlib
 )
 
@@ -30,25 +29,25 @@ file(GLOB UI_FILES "${CMAKE_SOURCE_DIR}/ui/*.ui")
 
 # 源文件
 set(SOURCES
-    src/main.cpp
-    src/MainWindow.cpp
-    src/FeiqBackend.cpp
-    src/ChatWindow.cpp
-    src/SettingsDialog.cpp
-    src/AboutDialog.cpp
-    src/GroupChatDialog.cpp
-    src/ScreenshotTool.cpp
+    src/app/main.cpp
+    src/backend/FeiqBackend.cpp
+    src/ui/AboutDialog.cpp
+    src/ui/ChatWindow.cpp
+    src/ui/GroupChatDialog.cpp
+    src/ui/MainWindow.cpp
+    src/ui/ScreenshotTool.cpp
+    src/ui/SettingsDialog.cpp
 )
 
 set(HEADERS
-    include/MainWindow.h
-    include/ChatWindow.h
-    include/FeiqBackend.h
-    include/FeiqTypes.h
-    include/SettingsDialog.h
-    include/AboutDialog.h
-    include/GroupChatDialog.h
-    include/ScreenshotTool.h
+    include/backend/FeiqBackend.h
+    include/domain/FeiqTypes.h
+    include/ui/AboutDialog.h
+    include/ui/ChatWindow.h
+    include/ui/GroupChatDialog.h
+    include/ui/MainWindow.h
+    include/ui/ScreenshotTool.h
+    include/ui/SettingsDialog.h
 )
 
 file(GLOB FEIQLIB_SOURCES "${CMAKE_SOURCE_DIR}/feiqlib/*.cpp")
