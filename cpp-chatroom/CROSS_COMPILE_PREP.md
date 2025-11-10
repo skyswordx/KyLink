@@ -96,29 +96,79 @@
 
 ### 3. 面向 RK3566（Kylin Ubuntu）
 
-#### 3.1 准备工具链与 sysroot
+#### 3.1 操作顺序（速览）
+- 在板端核对 Qt 运行库（Core/Gui/Widgets/Network）是否完备。
+- 在板端打包 sysroot（`/usr`、`/lib`、`/etc/ld.so.conf*` 等），并通过 U 盘或其它介质拷贝到 WSL。
+- 在 WSL 安装 aarch64 交叉工具链，解包 sysroot 至 `/opt/rk3566-sysroot`。
+- 准备一套 Qt 5.12.8 aarch64 安装（交叉编译生成或沿用板端开发包）。
+- 使用 `cmake/aarch64-linux-gnu.cmake` 进行 CMake 配置并构建项目。
+- 将 `FeiQChatroom` 与 Qt 运行库传回板端，完成运行验证。
 
-- 安装 aarch64 交叉编译工具链：
-  ```bash
-  sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-  ```
-- 从 RK3566 板端同步系统库（以 root 权限执行，或使用已有 sysroot）：
-  ```bash
-  rsync -a root@rk3566:/usr /opt/rk3566-sysroot/usr
-  rsync -a root@rk3566:/lib /opt/rk3566-sysroot/lib
-  rsync -a root@rk3566:/etc/ld.so.conf* /opt/rk3566-sysroot/etc/
-  ```
-- 确认板端 Qt 版本：
-  ```bash
-  qmake -v
-  strings /opt/rk3566-sysroot/usr/lib/aarch64-linux-gnu/libQt5Core.so.5 | grep "Qt "
-  ```
-  若版本低于 5.12.8 或模块缺失，需自行交叉编译一套匹配版本的 Qt。
+#### 3.2 板端准备
 
-#### 3.2 构建 Qt（板端已有完整 Qt 可跳过）
+##### 3.2.1 核对 Qt 运行库
+- 使用 `ldconfig -p | grep Qt5` 验证核心库是否存在。截图中可看到 `libQt5Core.so.5`、`libQt5Gui.so.5`、`libQt5Widgets.so.5`、`libQt5Network.so.5` 等均已注册，即满足当前工程的动态链接需求。
+- 若缺少基础库，可安装发行版运行时包：
+  ```bash
+  sudo apt install libqt5core5a libqt5gui5 libqt5widgets5 libqt5network5
+  ```
+- 运行 `qmake -v` 确认 Qt 版本；使用 `ls -l /usr/lib/aarch64-linux-gnu/libQt5Core.so*` 查看符号链接是否指向 `.so.5.12.8` 等真实文件。
+- 对已有可执行程序，可通过 `ldd /opt/feiqlab/FeiQChatroom | grep Qt5` 再次确认链接情况。
+- `qtbase5-dev` 主要提供头文件与开发符号；当前仓库只需运行库即可执行。`QtCharts`、`QtDeclarative`、`QtMultimedia`、`QtSvg` 等模块暂未在代码中使用，无需额外安装 `qtcharts5-dev` 等包。
+
+##### 3.2.2 无网络环境采集 sysroot
+1. 在板端准备输出目录并创建 tar 包（保持 root 权限，保留符号链接与权限）：
+   ```bash
+   sudo tar -cpf /tmp/rk3566-sysroot-$(date +%Y%m%d).tar \
+       --numeric-owner --xattrs --acls \
+       -C / \
+       usr \
+       lib \
+       etc/ld.so.conf \
+       etc/ld.so.conf.d \
+       etc/ld.so.cache
+   ```
+   如有自定义库，还可追加 `usr/local` 或其它目录。`tar` 会自动保留符号链接，无需额外处理。
+2. 生成校验值便于回传后核对：
+   ```bash
+   sha256sum /tmp/rk3566-sysroot-*.tar
+   ```
+3. 将压缩包复制到 U 盘或 SD 卡（示例挂载点 `/media/usb`）：
+   ```bash
+   sudo mount /dev/sdX1 /media/usb
+   sudo cp /tmp/rk3566-sysroot-*.tar /media/usb/
+   sync
+   sudo umount /media/usb
+   ```
+4. 若后续具备局域网和 SSH 条件，可改用 `rsync -a root@rk3566:/usr ...` 同步，命令与原流程兼容。
+
+#### 3.3 WSL 端准备
+
+##### 3.3.1 安装交叉工具链
+```bash
+sudo apt update
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+```
+
+##### 3.3.2 导入 sysroot
+1. 将板端导出的 `rk3566-sysroot-*.tar` 拷贝到 Windows 主机，再复制到 WSL 可访问的路径（例如 `/mnt/d/exports/`）。
+2. 在 WSL 中解包：
+   ```bash
+   sudo mkdir -p /opt/rk3566-sysroot
+   cd /opt/rk3566-sysroot
+   sudo tar -xpf /mnt/d/exports/rk3566-sysroot-*.tar
+   ```
+3. 检查关键库（符号链接应完整）：
+   ```bash
+   ls -l /opt/rk3566-sysroot/usr/lib/aarch64-linux-gnu/libQt5Core.so*
+   ls -l /opt/rk3566-sysroot/usr/lib/aarch64-linux-gnu/libQt5Gui.so*
+   ```
+4. 可选：添加一个便捷脚本 `scripts/env-rk3566.sh`，统一导出 `SYSROOT=/opt/rk3566-sysroot`、`PKG_CONFIG_PATH=${SYSROOT}/usr/lib/aarch64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH` 等变量，方便后续构建。
+
+#### 3.4 构建 Qt（板端已有完整 Qt 可跳过）
 
 1. 准备安装目录：`mkdir -p /opt/qt-5.12.8-rk3566`
-2. 运行 configure（sysroot 示例）：
+2. 运行 configure（指定 sysroot）：
    ```bash
    /opt/qt-src-5.12.8/configure \
        -prefix /opt/qt-5.12.8-rk3566 \
@@ -131,11 +181,20 @@
        -nomake tests -nomake examples \
        -skip qtwebengine
    ```
-3. 编译并安装（同上）。
+3. 编译并安装：
+   ```bash
+   cmake --build . --parallel
+   cmake --install .
+   ```
+4. 安装完成后确认 `Qt5Config.cmake` 位置：
+   ```bash
+   find /opt/qt-5.12.8-rk3566 -name Qt5Config.cmake
+   ```
+   若输出路径存在，即可用于 CMake 的 `Qt5_DIR` 参数。
 
-#### 3.3 项目交叉编译
+#### 3.5 项目交叉编译
 
-- 在 `cmake/aarch64-linux-gnu.cmake` 中补全：
+- 更新 `cmake/aarch64-linux-gnu.cmake`（如需，可追加 `set(CMAKE_PREFIX_PATH "/opt/qt-5.12.8-rk3566")` 与 `set(QT_QMAKE_EXECUTABLE "/opt/qt-5.12.8-rk3566/bin/qmake")`，保证 CMake 能找到 Qt）：
   ```cmake
   set(CMAKE_SYSTEM_NAME Linux)
   set(CMAKE_SYSTEM_PROCESSOR aarch64)
@@ -149,7 +208,7 @@
   set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
   set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
   ```
-- 构建命令：
+- 运行 CMake 生成并构建：
   ```bash
   cmake -S /home/circlemoon/kylin/cpp-chatroom \
         -B /home/circlemoon/kylin/cpp-chatroom/build-rk3566 \
@@ -160,23 +219,149 @@
 
   cmake --build /home/circlemoon/kylin/cpp-chatroom/build-rk3566 --parallel
   ```
-- 部署：
+- 构建完成后，可执行 `file build-rk3566/bin/FeiQChatroom`，确认目标为 `ELF 64-bit LSB executable, ARM aarch64`。
+- 若需离线部署，可打包输出：
   ```bash
-  scp build-rk3566/bin/FeiQChatroom root@rk3566:/opt/feiqlab/
+  tar -cpf build-rk3566.tar -C /home/circlemoon/kylin/cpp-chatroom/build-rk3566 bin lib
   ```
-  若使用板端自带 Qt，确保 `LD_LIBRARY_PATH` 指向正确位置；如带自建 Qt，请一并同步 `/opt/qt-5.12.8-rk3566` 的 `lib`。
 
-#### 3.4 运行与验证
+#### 3.6 运行与验证
 
+- 将 `build-rk3566/bin/FeiQChatroom` 与所需 Qt 运行库拷贝回板端（无网络时可复用 U 盘传输）。
 - 登录板端，导出必要环境变量：
   ```bash
   export LD_LIBRARY_PATH=/opt/qt-5.12.8-rk3566/lib:$LD_LIBRARY_PATH
   export QT_QPA_PLATFORM=linuxfb  # 或 wayland/xcb，视桌面环境而定
   /opt/feiqlab/FeiQChatroom
   ```
-- 如果使用系统自带 Qt，确保版本匹配并安装缺失的插件（如 `qtbase-plugins`、`qt5dxcb-plugin` 等）。
+- 若使用系统自带 Qt，确保 `ldd /opt/feiqlab/FeiQChatroom` 中的依赖全部解析；如使用自建 Qt，请一并部署 `/opt/qt-5.12.8-rk3566` 下的插件与库。
 
 ---
+
+
+
+
+### 3(). RK3566 交叉编译准备
+
+#### 快速索引
+- [环境准备](#环境准备)
+- [获取 sysroot](#获取-sysroot)
+- [环境变量与 PATH](#环境变量与-path)
+- [CMake 工具链文件](#cmake-工具链文件)
+- [配置与构建示例](#配置与构建示例)
+- [常见问题](#常见问题)
+
+#### 环境准备
+- 主机：WSL2（Ubuntu 20.04/22.04 均可），确保 `cmake` ≥ 3.18、`ninja-build`、`rsync`、`pkg-config` 已安装。  
+  ```bash
+  sudo apt update
+  sudo apt install build-essential cmake ninja-build pkg-config rsync
+  ```
+- SDK：`/home/circlemoon/SDK/firefly_rk3588_SDK`
+- 工具链：`/home/circlemoon/SDK/firefly_rk3588_SDK/prebuilts/gcc/linux-x86/aarch64/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu`
+  - C 编译器：`.../bin/aarch64-none-linux-gnu-gcc`
+  - C++ 编译器：`.../bin/aarch64-none-linux-gnu-g++`
+
+##### 获取 sysroot
+
+推荐从目标板 `rsync`：
+  ```bash
+  mkdir -p /home/circlemoon/kylin/sysroots/rk3566
+  rsync -a root@<board-ip>:/lib/  /home/circlemoon/kylin/sysroots/rk3566/lib/
+  rsync -a root@<board-ip>:/usr/  /home/circlemoon/kylin/sysroots/rk3566/usr/
+  ```
+
+也可以直接利用 SDK 里的 Ubuntu20.04.3LTS_Firefly_202510071336_rootfs.img 来准备交叉编译用的 sysroot，流程如下（以 WSL 为例，需要 `sudo` 权限）：
+
+1. **创建挂载点与目标目录**
+   ```bash
+   mkdir -p /home/circlemoon/sysroots/rk3566-rootfs-mnt
+   mkdir -p /home/circlemoon/sysroots/rk3566
+   ```
+
+2. **挂载 rootfs 镜像**
+   ```bash
+   sudo mount -o loop /home/circlemoon/SDK/firefly_rk3588_SDK/prebuilt_rootfs/Ubuntu20.04.3LTS_Firefly_202510071336_rootfs.img \
+       /home/circlemoon/sysroots/rk3566-rootfs-mnt
+   ```
+
+3. **同步内容到 sysroot**
+   ```bash
+   sudo rsync -aHAX --delete \
+       /home/circlemoon/sysroots/rk3566-rootfs-mnt/ \
+       /home/circlemoon/sysroots/rk3566/
+   ```
+
+4. **卸载镜像**
+   ```bash
+   sudo umount /home/circlemoon/sysroots/rk3566-rootfs-mnt
+   rmdir /home/circlemoon/sysroots/rk3566-rootfs-mnt
+   ```
+
+
+#### 环境变量与 PATH
+在 `cpp-chatroom` 项目中新建 `env/setup-rk3566.sh`：
+```bash
+#!/bin/bash
+export RK3566_SDK=/home/circlemoon/SDK/firefly_rk3588_SDK
+export RK3566_TOOLCHAIN=$RK3566_SDK/prebuilts/gcc/linux-x86/aarch64/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu
+export RK3566_SYSROOT=/home/circlemoon/sysroots/rk3566
+
+export PATH=$RK3566_TOOLCHAIN/bin:$PATH
+export PKG_CONFIG_SYSROOT_DIR=$RK3566_SYSROOT
+export PKG_CONFIG_LIBDIR=$RK3566_SYSROOT/usr/lib/pkgconfig:$RK3566_SYSROOT/usr/share/pkgconfig
+```
+使用时：
+```bash
+source env/setup-rk3566.sh
+```
+
+#### CMake 工具链文件
+创建 `cmake/toolchains/rk3566.cmake`：
+```cmake
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR aarch64)
+
+if(NOT DEFINED ENV{RK3566_SYSROOT})
+  message(FATAL_ERROR "请先 source env/setup-rk3566.sh")
+endif()
+
+set(RK3566_SYSROOT $ENV{RK3566_SYSROOT})
+set(RK3566_TOOLCHAIN $ENV{RK3566_TOOLCHAIN})
+
+set(CMAKE_SYSROOT ${RK3566_SYSROOT})
+set(CMAKE_C_COMPILER ${RK3566_TOOLCHAIN}/bin/aarch64-none-linux-gnu-gcc)
+set(CMAKE_CXX_COMPILER ${RK3566_TOOLCHAIN}/bin/aarch64-none-linux-gnu-g++)
+
+set(CMAKE_C_FLAGS_INIT "--sysroot=${CMAKE_SYSROOT}")
+set(CMAKE_CXX_FLAGS_INIT "--sysroot=${CMAKE_SYSROOT}")
+
+set(CMAKE_FIND_ROOT_PATH ${CMAKE_SYSROOT})
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+```
+
+#### 配置与构建示例
+```bash
+source env/setup-rk3566.sh
+mkdir -p build-rk3566
+cd build-rk3566
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/rk3566.cmake \
+      -G Ninja \
+      ..
+ninja
+```
+编译完成后可用 `file <binary>` 确认为 `aarch64`。
+
+#### 常见问题
+- **头文件缺失**：确认 sysroot 中 `usr/include` 已同步，必要时从板端再拉取一次。
+- **找不到 pkg-config 包**：检查 `PKG_CONFIG_LIBDIR` 是否指向 sysroot；必要时自定义 `.pc`。
+- **链接失败 (GLIBC version)**：确保 sdk/板端 libc 版本一致；如板子较旧，优先使用板端 `rsync` 的 sysroot。
+- **运行时库缺失**：把生成的可执行文件及依赖的 `.so` 一并拷贝到板子，例如 `/usr/local/bin` 与 `/usr/local/lib`。
+
 
 ### 4. 验证流程建议
 
