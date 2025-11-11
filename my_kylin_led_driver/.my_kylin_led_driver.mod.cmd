@@ -1,0 +1,1 @@
+cmd_/home/circlemoon/SDK/firefly_rk3588_SDK/external/my_kylin_led_driver/my_kylin_led_driver.mod := { echo  /home/circlemoon/SDK/firefly_rk3588_SDK/external/my_kylin_led_driver/my_kylin_led_driver.o;  echo; } > /home/circlemoon/SDK/firefly_rk3588_SDK/external/my_kylin_led_driver/my_kylin_led_driver.mod

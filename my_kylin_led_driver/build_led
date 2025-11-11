@@ -1,0 +1,76 @@
+#!/bin/bash
+# Build helper for the Kylin LED module
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUILD_OUT="$SCRIPT_DIR/temp"
+KDIR=${KDIR:-"$SCRIPT_DIR/../../kernel"}
+ARCH=${ARCH:-arm64}
+CROSS_COMPILE=${CROSS_COMPILE:-"$SCRIPT_DIR/../../prebuilts/gcc/linux-x86/aarch64/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-"}
+
+ARTIFACTS=(
+	"$SCRIPT_DIR/my_kylin_led_driver.o"
+	"$SCRIPT_DIR/my_kylin_led_driver.mod"
+	"$SCRIPT_DIR/my_kylin_led_driver.mod.c"
+	"$SCRIPT_DIR/my_kylin_led_driver.mod.o"
+	"$SCRIPT_DIR/my_kylin_led_driver.mod.d"
+	"$SCRIPT_DIR/my_kylin_led_driver.order"
+	"$SCRIPT_DIR/my_kylin_led_driver.symvers"
+	"$SCRIPT_DIR/Module.symvers"
+	"$SCRIPT_DIR/modules.order"
+)
+
+cleanup_artifacts()
+{
+	local f
+	for f in "${ARTIFACTS[@]}"; do
+		[ -e "$f" ] || continue
+		rm -f "$f"
+	done
+}
+
+stash_artifacts()
+{
+	local f
+	mkdir -p "$BUILD_OUT"
+	for f in "${ARTIFACTS[@]}"; do
+		[ -e "$f" ] || continue
+		mv "$f" "$BUILD_OUT/"
+	done
+}
+
+if [ ! -d "$KDIR" ]; then
+	echo "Kernel directory not found: $KDIR" >&2
+	exit 1
+fi
+
+echo "Building my_kylin_led_driver against $KDIR (temp -> $BUILD_OUT)"
+if [ "${1:-}" = "clean" ]; then
+	make -C "$KDIR" \
+	    ARCH="$ARCH" \
+	    CROSS_COMPILE="$CROSS_COMPILE" \
+	    M="$SCRIPT_DIR" \
+	    clean
+	rm -f "$SCRIPT_DIR"/my_kylin_led_driver.ko
+	cleanup_artifacts
+	rm -rf "$BUILD_OUT"
+	exit 0
+fi
+
+rm -f "$SCRIPT_DIR"/my_kylin_led_driver.ko
+cleanup_artifacts
+
+make -C "$KDIR" \
+	ARCH="$ARCH" \
+	CROSS_COMPILE="$CROSS_COMPILE" \
+	M="$SCRIPT_DIR" \
+	modules "$@"
+
+if [ ! -f "$SCRIPT_DIR/my_kylin_led_driver.ko" ]; then
+	echo "No module produced" >&2
+	exit 1
+fi
+
+stash_artifacts
+
+echo "Module ready at $SCRIPT_DIR/my_kylin_led_driver.ko (intermediates in $BUILD_OUT)"

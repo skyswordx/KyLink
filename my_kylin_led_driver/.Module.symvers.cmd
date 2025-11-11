@@ -1,0 +1,1 @@
+cmd_/home/circlemoon/SDK/firefly_rk3588_SDK/external/my_kylin_led_driver/Module.symvers := sed 's/\.ko$$/\.o/' /home/circlemoon/SDK/firefly_rk3588_SDK/external/my_kylin_led_driver/modules.order | scripts/mod/modpost     -o /home/circlemoon/SDK/firefly_rk3588_SDK/external/my_kylin_led_driver/Module.symvers -e -i Module.symvers   -T -

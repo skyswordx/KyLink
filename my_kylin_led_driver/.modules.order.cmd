@@ -1,0 +1,1 @@
+cmd_/home/circlemoon/SDK/firefly_rk3588_SDK/external/my_kylin_led_driver/modules.order := {   echo /home/circlemoon/SDK/firefly_rk3588_SDK/external/my_kylin_led_driver/my_kylin_led_driver.ko; :; } | awk '!x[$$0]++' - > /home/circlemoon/SDK/firefly_rk3588_SDK/external/my_kylin_led_driver/modules.order
