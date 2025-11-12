@@ -1,6 +1,7 @@
 #include "ui/ChatWindow.h"
 #include "ui/MainWindow.h"
 #include "ui/ScreenshotTool.h"
+#include "ui/CameraPreviewDialog.h"
 #include "backend/FeiqBackend.h"
 #include <QMessageBox>
 #include <QFileDialog>
@@ -69,7 +70,9 @@ ChatWindow::ChatWindow(const QString& ownUsername,
     , m_fileButton(nullptr)
     , m_emojiButton(nullptr)
     , m_screenshotButton(nullptr)
+    , m_cameraButton(nullptr)
     , m_screenshotTool(nullptr)
+    , m_cameraDialog(nullptr)
 {
     setWindowTitle(QStringLiteral("与 %1 聊天中").arg(displayNameOf(targetFellow)));
     setGeometry(300, 300, 500, 400);
@@ -98,9 +101,11 @@ void ChatWindow::setupUI()
     m_fileButton = new QPushButton("发送文件/图片", this);
     m_emojiButton = new QPushButton("发送表情", this);
     m_screenshotButton = new QPushButton("截图", this);
+    m_cameraButton = new QPushButton("打开摄像头", this);
     toolbarLayout->addWidget(m_fileButton);
     toolbarLayout->addWidget(m_emojiButton);
     toolbarLayout->addWidget(m_screenshotButton);
+    toolbarLayout->addWidget(m_cameraButton);
     toolbarLayout->addStretch();
     layout->addLayout(toolbarLayout);
     
@@ -120,6 +125,7 @@ void ChatWindow::setupUI()
     connect(m_fileButton, &QPushButton::clicked, this, &ChatWindow::onFileClicked);
     connect(m_emojiButton, &QPushButton::clicked, this, &ChatWindow::onEmojiClicked);
     connect(m_screenshotButton, &QPushButton::clicked, this, &ChatWindow::onScreenshotClicked);
+    connect(m_cameraButton, &QPushButton::clicked, this, &ChatWindow::onCameraClicked);
     connect(closeButton, &QPushButton::clicked, this, &ChatWindow::close);
 }
 
@@ -259,6 +265,20 @@ void ChatWindow::onScreenshotClicked()
     });
 }
 
+void ChatWindow::onCameraClicked()
+{
+    if (!m_cameraDialog) {
+        m_cameraDialog = new CameraPreviewDialog(this);
+        connect(m_cameraDialog, &QObject::destroyed, this, [this]() {
+            m_cameraDialog = nullptr;
+        });
+    }
+
+    m_cameraDialog->show();
+    m_cameraDialog->raise();
+    m_cameraDialog->activateWindow();
+}
+
 void ChatWindow::onScreenshotTaken(const QString& filePath)
 {
     if (m_screenshotTool) {
@@ -299,6 +319,9 @@ void ChatWindow::appendImage(const QString& imagePath, const QString& senderName
 
 void ChatWindow::closeEvent(QCloseEvent* event)
 {
+    if (m_cameraDialog) {
+        m_cameraDialog->close();
+    }
     qDebug() << QString("关闭与 %1 的聊天窗口").arg(m_targetIp);
     event->accept();
 }

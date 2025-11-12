@@ -10,7 +10,7 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOMOC ON)
 
 # 查找Qt5 (要求 5.12.8 或更高版本，当前在 Ubuntu 上链接 5.12.8)
-find_package(Qt5 5.12.8 REQUIRED COMPONENTS Core Gui Widgets Network)
+find_package(Qt5 5.12.8 REQUIRED COMPONENTS Core Gui Widgets Network Multimedia MultimediaWidgets)
 find_package(Threads REQUIRED)
 
 # 设置输出目录
@@ -33,6 +33,7 @@ set(SOURCES
     src/backend/FeiqBackend.cpp
     src/ui/AboutDialog.cpp
     src/ui/ChatWindow.cpp
+    src/ui/CameraPreviewDialog.cpp
     src/ui/GroupChatDialog.cpp
     src/ui/MainWindow.cpp
     src/ui/ScreenshotTool.cpp
@@ -44,6 +45,7 @@ set(HEADERS
     include/domain/FeiqTypes.h
     include/ui/AboutDialog.h
     include/ui/ChatWindow.h
+    include/ui/CameraPreviewDialog.h
     include/ui/GroupChatDialog.h
     include/ui/MainWindow.h
     include/ui/ScreenshotTool.h
@@ -70,6 +72,8 @@ target_link_libraries(${PROJECT_NAME}
     Qt5::Gui
     Qt5::Widgets
     Qt5::Network
+    Qt5::Multimedia
+    Qt5::MultimediaWidgets
     feiqlib
 )
 
