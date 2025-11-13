@@ -12,6 +12,8 @@ set(CMAKE_AUTOMOC ON)
 # 查找Qt5 (要求 5.12.8 或更高版本，当前在 Ubuntu 上链接 5.12.8)
 find_package(Qt5 5.12.8 REQUIRED COMPONENTS Core Gui Widgets Network Multimedia MultimediaWidgets)
 find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-video-1.0)
 
 # 设置输出目录
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -75,7 +77,12 @@ target_link_libraries(${PROJECT_NAME}
     Qt5::Multimedia
     Qt5::MultimediaWidgets
     feiqlib
+    ${GSTREAMER_LIBRARIES}
 )
+
+target_include_directories(${PROJECT_NAME} PRIVATE ${GSTREAMER_INCLUDE_DIRS})
+target_link_directories(${PROJECT_NAME} PRIVATE ${GSTREAMER_LIBRARY_DIRS})
+target_compile_options(${PROJECT_NAME} PRIVATE ${GSTREAMER_CFLAGS_OTHER})
 
 target_compile_definitions(${PROJECT_NAME}
     PRIVATE PROJECT_VERSION_STR="${PROJECT_VERSION}"

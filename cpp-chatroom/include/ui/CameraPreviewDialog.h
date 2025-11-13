@@ -2,15 +2,20 @@
 #define CAMERAPREVIEWDIALOG_H
 
 #include <QDialog>
-#include <QCamera>
-#include <QList>
-#include <QCameraInfo>
-#include <memory>
+#include <QString>
+#include <vector>
+
+typedef struct _GstElement GstElement;
+typedef struct _GstBus GstBus;
+typedef struct _GstDevice GstDevice;
 
 class QLabel;
 class QComboBox;
 class QPushButton;
-class QCameraViewfinder;
+class QWidget;
+class QTimer;
+class QCloseEvent;
+class QResizeEvent;
 
 class CameraPreviewDialog : public QDialog
 {
@@ -22,28 +27,42 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private slots:
     void onDeviceChanged(int index);
     void onStartStopClicked();
-    void handleCameraStateChanged(QCamera::State state);
-    void handleCameraError(QCamera::Error error);
+    void processBusMessages();
 
 private:
     void initializeUi();
     void populateDevices();
-    void createCameraForIndex(int index);
-    void releaseCamera();
+    void clearDevices();
+    void startPipelineForIndex(int index);
+    void stopPipeline();
     void updateControls();
     void updateStatusText(const QString& text);
+    void bindOverlayWindow();
+    bool isPipelineActive() const;
+    static void ensureGStreamerInitialized();
+
+    struct VideoDevice {
+        QString label;
+        GstDevice* handle = nullptr;
+    };
 
     QComboBox* m_deviceCombo;
     QPushButton* m_startStopButton;
     QLabel* m_statusLabel;
-    QCameraViewfinder* m_viewfinder;
+    QWidget* m_videoWidget;
+    QTimer* m_busPollTimer;
 
-    QList<QCameraInfo> m_availableDevices;
-    std::unique_ptr<QCamera> m_camera;
+    std::vector<VideoDevice> m_devices;
+
+    GstElement* m_pipeline;
+    GstElement* m_videoSink;
+    GstBus* m_bus;
+    bool m_isPlaying;
 };
 
 #endif // CAMERAPREVIEWDIALOG_H
