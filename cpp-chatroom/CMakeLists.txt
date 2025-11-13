@@ -14,6 +14,34 @@ find_package(Qt5 5.12.8 REQUIRED COMPONENTS Core Gui Widgets Network Multimedia 
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-video-1.0)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
+
+set(_rknn_hint_paths)
+if(CMAKE_SYSROOT)
+    list(APPEND _rknn_hint_paths
+        ${CMAKE_SYSROOT}/usr/include
+        ${CMAKE_SYSROOT}/usr/lib
+        ${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu)
+endif()
+list(APPEND _rknn_hint_paths
+    /usr/include
+    /usr/lib
+    /usr/lib/aarch64-linux-gnu)
+
+find_path(RKNN_INCLUDE_DIR rknn_api.h
+    HINTS ${_rknn_hint_paths}
+    PATH_SUFFIXES rknn)
+find_library(RKNNRT_LIBRARY NAMES rknnrt
+    HINTS ${_rknn_hint_paths}
+    PATH_SUFFIXES lib)
+
+if(NOT RKNN_INCLUDE_DIR)
+    message(FATAL_ERROR "未找到 rknn_api.h，请设置 RKNN_INCLUDE_DIR 或确认 sysroot 内容。")
+endif()
+
+if(NOT RKNNRT_LIBRARY)
+    message(FATAL_ERROR "未找到 rknnrt 库，请设置 RKNNRT_LIBRARY 或确认 sysroot 内容。")
+endif()
 
 # 设置输出目录
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -33,6 +61,8 @@ file(GLOB UI_FILES "${CMAKE_SOURCE_DIR}/ui/*.ui")
 set(SOURCES
     src/app/main.cpp
     src/backend/FeiqBackend.cpp
+    src/npu/YoloV5Runner.cpp
+    src/npu/postprocess.cpp
     src/ui/AboutDialog.cpp
     src/ui/ChatWindow.cpp
     src/ui/CameraPreviewDialog.cpp
@@ -45,6 +75,8 @@ set(SOURCES
 set(HEADERS
     include/backend/FeiqBackend.h
     include/domain/FeiqTypes.h
+    include/npu/YoloV5Runner.h
+    include/npu/postprocess.h
     include/ui/AboutDialog.h
     include/ui/ChatWindow.h
     include/ui/CameraPreviewDialog.h
@@ -81,11 +113,31 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${GSTREAMER_INCLUDE_DIRS})
+target_include_directories(${PROJECT_NAME} PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_include_directories(${PROJECT_NAME} PRIVATE ${RKNN_INCLUDE_DIR})
 target_link_directories(${PROJECT_NAME} PRIVATE ${GSTREAMER_LIBRARY_DIRS})
 target_compile_options(${PROJECT_NAME} PRIVATE ${GSTREAMER_CFLAGS_OTHER})
 
 target_compile_definitions(${PROJECT_NAME}
     PRIVATE PROJECT_VERSION_STR="${PROJECT_VERSION}"
+)
+
+target_link_libraries(${PROJECT_NAME}
+    ${OpenCV_LIBS}
+    ${RKNNRT_LIBRARY}
+)
+
+set(YOLO_REFERENCE_ROOT ${CMAKE_SOURCE_DIR}/../Reference/YoloV5-NPU)
+set(NPU_MODEL_SRC ${YOLO_REFERENCE_ROOT}/rk3566/yolov5s_relu.rknn)
+set(NPU_IMAGE_SRC ${YOLO_REFERENCE_ROOT}/busstop.jpg)
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/npu_assets
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NPU_MODEL_SRC} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/npu_assets/
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NPU_IMAGE_SRC} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/npu_assets/
+    BYPRODUCTS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/npu_assets/yolov5s_relu.rknn
+               ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/npu_assets/busstop.jpg
+    COMMENT "复制 NPU 示例模型和图片到运行目录"
 )
 
 # Windows特定设置
