@@ -1,42 +1,116 @@
 #include "ui/CameraPreviewDialog.h"
 
+#include "npu/YoloV5Runner.h"
+
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QDir>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMetaType>
+#include <QObject>
+#include <QPixmap>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
-#include <QWidget>
 
+#include <atomic>
 #include <mutex>
 
+#include <gst/app/gstappsink.h>
 #include <gst/gst.h>
-#include <gst/video/videooverlay.h>
+#include <gst/video/video.h>
+#include <opencv2/core/mat.hpp>
+#include <opencv2/imgproc.hpp>
 
 namespace {
 
 constexpr int kBusPollIntervalMs = 150;
 constexpr gint kQueueLeakyDownstream = 2; // matches GstQueueLeaky::GST_QUEUE_LEAKY_DOWNSTREAM in gstqueue.h
+constexpr const char* kAppsinkName = "npu_appsink";
 
 } // namespace
+
+class CameraPreviewDialog::DetectionWorker final : public QObject {
+    Q_OBJECT
+
+public:
+    explicit DetectionWorker(QObject* parent = nullptr)
+        : QObject(parent) {}
+
+    bool loadModel(const QString& modelPath, QString* errorOut) {
+        return runner_.loadModel(modelPath, errorOut);
+    }
+
+public slots:
+    void processFrame(const FramePacket& packet) {
+        if (!runner_.isReady()) {
+            emit inferenceError(tr("模型未加载"));
+            return;
+        }
+
+        if (packet.width <= 0 || packet.height <= 0 || packet.data.isEmpty()) {
+            emit inferenceError(tr("无效帧数据"));
+            return;
+        }
+
+        cv::Mat frame(packet.height,
+                      packet.width,
+                      CV_8UC3,
+                      const_cast<char*>(packet.data.constData()),
+                      packet.stride);
+
+        DetectResultGroup detections{};
+        std::int64_t inferenceTimeMs = 0;
+        cv::Mat visualized;
+        QString error;
+        if (!runner_.infer(frame, &detections, &inferenceTimeMs, &visualized, &error)) {
+            emit inferenceError(error);
+            return;
+        }
+
+        cv::Mat display;
+        cv::cvtColor(visualized, display, cv::COLOR_BGR2RGB);
+
+        QImage image(display.data,
+                     display.cols,
+                     display.rows,
+                     display.step,
+                     QImage::Format_RGB888);
+        emit inferenceReady(image.copy(), detections.count, static_cast<qint64>(inferenceTimeMs));
+    }
+
+signals:
+    void inferenceReady(const QImage& image, int objectCount, qint64 inferenceTimeMs);
+    void inferenceError(const QString& errorText);
+
+private:
+    YoloV5Runner runner_;
+};
 
 CameraPreviewDialog::CameraPreviewDialog(QWidget* parent)
     : QDialog(parent)
     , m_deviceCombo(nullptr)
     , m_startStopButton(nullptr)
     , m_statusLabel(nullptr)
-    , m_videoWidget(nullptr)
+    , m_videoLabel(nullptr)
     , m_busPollTimer(nullptr)
     , m_pipeline(nullptr)
-    , m_videoSink(nullptr)
+    , m_appSink(nullptr)
     , m_bus(nullptr)
     , m_isPlaying(false)
+    , m_processingFrame(false)
+    , m_detectionThread(nullptr)
+    , m_detectionWorker(nullptr)
 {
     setWindowTitle(tr("摄像头预览"));
     setAttribute(Qt::WA_DeleteOnClose);
     resize(720, 520);
+
+    qRegisterMetaType<FramePacket>("FramePacket");
 
     initializeUi();
     populateDevices();
@@ -47,6 +121,7 @@ CameraPreviewDialog::~CameraPreviewDialog()
 {
     stopPipeline();
     clearDevices();
+    disposeDetectionWorker();
 }
 
 void CameraPreviewDialog::closeEvent(QCloseEvent* event)
@@ -58,7 +133,7 @@ void CameraPreviewDialog::closeEvent(QCloseEvent* event)
 void CameraPreviewDialog::resizeEvent(QResizeEvent* event)
 {
     QDialog::resizeEvent(event);
-    bindOverlayWindow();
+    updateDisplayedPixmap();
 }
 
 void CameraPreviewDialog::initializeUi()
@@ -74,14 +149,16 @@ void CameraPreviewDialog::initializeUi()
     controlsLayout->addWidget(m_deviceCombo, 1);
     controlsLayout->addWidget(m_startStopButton);
 
-    m_videoWidget = new QWidget(this);
-    m_videoWidget->setAttribute(Qt::WA_NativeWindow);
-    m_videoWidget->setMinimumHeight(360);
+    m_videoLabel = new QLabel(this);
+    m_videoLabel->setAlignment(Qt::AlignCenter);
+    m_videoLabel->setMinimumHeight(360);
+    m_videoLabel->setStyleSheet("background-color: #202020; color: #ffffff;");
+    m_videoLabel->setText(tr("暂无视频帧"));
 
     m_statusLabel = new QLabel(tr("正在初始化摄像头列表..."), this);
 
     mainLayout->addLayout(controlsLayout);
-    mainLayout->addWidget(m_videoWidget, 1);
+    mainLayout->addWidget(m_videoLabel, 1);
     mainLayout->addWidget(m_statusLabel);
 
     m_busPollTimer = new QTimer(this);
@@ -257,6 +334,12 @@ void CameraPreviewDialog::startPipelineForIndex(int index)
 
     ensureGStreamerInitialized();
 
+    QString modelError;
+    if (!ensureDetectionWorker(&modelError)) {
+        updateStatusText(modelError);
+        return;
+    }
+
     GstDevice* device = m_devices.at(index).handle;
     if (!device) {
         updateStatusText(tr("摄像头设备不可用"));
@@ -266,19 +349,27 @@ void CameraPreviewDialog::startPipelineForIndex(int index)
     GstElement* source = gst_device_create_element(device, nullptr);
     GstElement* convert = gst_element_factory_make("videoconvert", "convert");
     GstElement* queue = gst_element_factory_make("queue", "queue");
-    GstElement* sink = gst_element_factory_make("ximagesink", "sink");
+    GstElement* capsfilter = gst_element_factory_make("capsfilter", "capsfilter");
+    GstElement* appsink = gst_element_factory_make("appsink", kAppsinkName);
 
-    if (!source || !convert || !sink || !queue) {
+    if (!source || !convert || !queue || !capsfilter || !appsink) {
         updateStatusText(tr("无法创建 GStreamer 元件"));
         if (source) gst_object_unref(source);
         if (convert) gst_object_unref(convert);
         if (queue) gst_object_unref(queue);
-        if (sink) gst_object_unref(sink);
+        if (capsfilter) gst_object_unref(capsfilter);
+        if (appsink) gst_object_unref(appsink);
         return;
     }
 
     g_object_set(queue, "leaky", kQueueLeakyDownstream, nullptr); // drop stale frames when UI lags
-    g_object_set(sink, "sync", FALSE, nullptr);
+    GstCaps* caps = gst_caps_from_string("video/x-raw,format=BGR");
+    g_object_set(capsfilter, "caps", caps, nullptr);
+    gst_caps_unref(caps);
+
+    g_object_set(appsink, "emit-signals", FALSE, "sync", FALSE, "max-buffers", 1, "drop", TRUE, nullptr);
+    GstAppSinkCallbacks callbacks = {nullptr, nullptr, &CameraPreviewDialog::onAppSinkNewSample};
+    gst_app_sink_set_callbacks(GST_APP_SINK(appsink), &callbacks, this, nullptr);
 
     m_pipeline = gst_pipeline_new("camera-preview-pipeline");
     if (!m_pipeline) {
@@ -286,20 +377,20 @@ void CameraPreviewDialog::startPipelineForIndex(int index)
         gst_object_unref(source);
         gst_object_unref(convert);
         gst_object_unref(queue);
-        gst_object_unref(sink);
+        gst_object_unref(capsfilter);
+        gst_object_unref(appsink);
         return;
     }
 
-    gst_bin_add_many(GST_BIN(m_pipeline), source, queue, convert, sink, nullptr);
-    const gboolean linked = gst_element_link_many(source, queue, convert, sink, nullptr);
+    gst_bin_add_many(GST_BIN(m_pipeline), source, queue, convert, capsfilter, appsink, nullptr);
+    const gboolean linked = gst_element_link_many(source, queue, convert, capsfilter, appsink, nullptr);
     if (!linked) {
         updateStatusText(tr("GStreamer 管线连接失败"));
         stopPipeline();
         return;
     }
 
-    m_videoSink = sink;
-    bindOverlayWindow();
+    m_appSink = appsink;
 
     m_bus = gst_element_get_bus(m_pipeline);
     if (!m_bus) {
@@ -309,6 +400,7 @@ void CameraPreviewDialog::startPipelineForIndex(int index)
     }
 
     m_busPollTimer->start();
+    m_processingFrame = false;
 
     const GstStateChangeReturn ret = gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
@@ -325,6 +417,7 @@ void CameraPreviewDialog::startPipelineForIndex(int index)
 void CameraPreviewDialog::stopPipeline()
 {
     m_busPollTimer->stop();
+    m_processingFrame = false;
 
     if (m_pipeline) {
         gst_element_set_state(m_pipeline, GST_STATE_NULL);
@@ -340,8 +433,9 @@ void CameraPreviewDialog::stopPipeline()
         m_pipeline = nullptr;
     }
 
-    m_videoSink = nullptr;
+    m_appSink = nullptr;
     m_isPlaying = false;
+    clearVideoLabel();
 }
 
 void CameraPreviewDialog::updateControls()
@@ -362,20 +456,6 @@ void CameraPreviewDialog::updateStatusText(const QString& text)
     m_statusLabel->setText(text);
 }
 
-void CameraPreviewDialog::bindOverlayWindow()
-{
-    if (!m_videoSink || !GST_IS_VIDEO_OVERLAY(m_videoSink)) {
-        return;
-    }
-
-    const WId windowId = m_videoWidget->winId();
-    gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(m_videoSink), static_cast<guintptr>(windowId));
-    gst_video_overlay_handle_events(GST_VIDEO_OVERLAY(m_videoSink), TRUE);
-    gst_video_overlay_set_render_rectangle(GST_VIDEO_OVERLAY(m_videoSink), 0, 0,
-                                           m_videoWidget->width(), m_videoWidget->height());
-    gst_video_overlay_expose(GST_VIDEO_OVERLAY(m_videoSink));
-}
-
 bool CameraPreviewDialog::isPipelineActive() const
 {
     return m_pipeline != nullptr && m_isPlaying;
@@ -388,3 +468,172 @@ void CameraPreviewDialog::ensureGStreamerInitialized()
         gst_init(nullptr, nullptr);
     });
 }
+
+bool CameraPreviewDialog::ensureDetectionWorker(QString* errorOut)
+{
+    if (m_detectionWorker) {
+        return true;
+    }
+
+    auto* worker = new DetectionWorker();
+    const QString assetDir = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("npu_assets"));
+    const QString modelPath = QDir(assetDir).filePath(QStringLiteral("yolov5s_relu.rknn"));
+
+    QString loadError;
+    if (!worker->loadModel(modelPath, &loadError)) {
+        if (errorOut) {
+            *errorOut = tr("加载模型失败: %1").arg(loadError);
+        }
+        delete worker;
+        return false;
+    }
+
+    m_detectionThread = new QThread(this);
+    worker->moveToThread(m_detectionThread);
+    connect(m_detectionThread, &QThread::finished, worker, &QObject::deleteLater);
+    connect(this, &CameraPreviewDialog::frameCaptured, worker, &DetectionWorker::processFrame, Qt::QueuedConnection);
+    connect(worker, &DetectionWorker::inferenceReady, this, &CameraPreviewDialog::onInferenceFrameReady, Qt::QueuedConnection);
+    connect(worker, &DetectionWorker::inferenceError, this, &CameraPreviewDialog::onInferenceError, Qt::QueuedConnection);
+    m_detectionThread->start();
+
+    m_detectionWorker = worker;
+    m_processingFrame = false;
+    return true;
+}
+
+void CameraPreviewDialog::disposeDetectionWorker()
+{
+    if (!m_detectionThread) {
+        return;
+    }
+
+    m_detectionThread->quit();
+    m_detectionThread->wait();
+    delete m_detectionThread;
+    m_detectionThread = nullptr;
+    m_detectionWorker = nullptr;
+    m_processingFrame = false;
+}
+
+void CameraPreviewDialog::clearVideoLabel()
+{
+    m_currentPixmap = QPixmap();
+    if (m_videoLabel) {
+        m_videoLabel->setText(tr("暂无视频帧"));
+        m_videoLabel->setPixmap(QPixmap());
+    }
+}
+
+void CameraPreviewDialog::updateDisplayedPixmap()
+{
+    if (!m_videoLabel) {
+        return;
+    }
+
+    if (m_currentPixmap.isNull()) {
+        return;
+    }
+
+    const QSize targetSize = m_videoLabel->size();
+    const QPixmap scaled = m_currentPixmap.scaled(targetSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    m_videoLabel->setPixmap(scaled);
+    m_videoLabel->setText(QString());
+}
+
+void CameraPreviewDialog::onInferenceFrameReady(const QImage& image, int objectCount, qint64 inferenceTimeMs)
+{
+    m_processingFrame = false;
+
+    if (image.isNull()) {
+        return;
+    }
+
+    m_currentPixmap = QPixmap::fromImage(image);
+    updateDisplayedPixmap();
+
+    if (m_videoLabel) {
+        m_videoLabel->setText(QString());
+    }
+
+    updateStatusText(tr("预览中 - 目标 %1, 推理 %2 ms").arg(objectCount).arg(inferenceTimeMs));
+}
+
+void CameraPreviewDialog::onInferenceError(const QString& errorText)
+{
+    m_processingFrame = false;
+    updateStatusText(tr("推理失败: %1").arg(errorText));
+}
+
+void CameraPreviewDialog::handleNewFrame(const FramePacket& packet)
+{
+    if (!m_detectionWorker || !m_detectionThread || !m_detectionThread->isRunning()) {
+        m_processingFrame = false;
+        return;
+    }
+
+    emit frameCaptured(packet);
+}
+
+GstFlowReturn CameraPreviewDialog::onAppSinkNewSample(GstAppSink* sink, gpointer userData)
+{
+    auto* self = static_cast<CameraPreviewDialog*>(userData);
+    if (!self || self->m_processingFrame.load()) {
+        GstSample* discardSample = gst_app_sink_pull_sample(sink);
+        if (discardSample) {
+            gst_sample_unref(discardSample);
+        }
+        return GST_FLOW_OK;
+    }
+
+    GstSample* sample = gst_app_sink_pull_sample(sink);
+    if (!sample) {
+        return GST_FLOW_OK;
+    }
+
+    GstCaps* caps = gst_sample_get_caps(sample);
+    if (!caps) {
+        gst_sample_unref(sample);
+        return GST_FLOW_OK;
+    }
+
+    GstVideoInfo info;
+    gst_video_info_init(&info);
+    if (!gst_video_info_from_caps(&info, caps)) {
+        gst_sample_unref(sample);
+        return GST_FLOW_OK;
+    }
+
+    GstBuffer* buffer = gst_sample_get_buffer(sample);
+    if (!buffer) {
+        gst_sample_unref(sample);
+        return GST_FLOW_OK;
+    }
+
+    GstMapInfo mapInfo;
+    if (!gst_buffer_map(buffer, &mapInfo, GST_MAP_READ)) {
+        gst_sample_unref(sample);
+        return GST_FLOW_OK;
+    }
+
+    FramePacket packet;
+    packet.width = GST_VIDEO_INFO_WIDTH(&info);
+    packet.height = GST_VIDEO_INFO_HEIGHT(&info);
+    packet.stride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 0);
+    packet.data = QByteArray(reinterpret_cast<const char*>(mapInfo.data), static_cast<int>(mapInfo.size));
+    packet.pts = static_cast<std::int64_t>(GST_BUFFER_PTS(buffer));
+
+    gst_buffer_unmap(buffer, &mapInfo);
+    gst_sample_unref(sample);
+
+    self->m_processingFrame = true;
+    QMetaObject::invokeMethod(self,
+                              [self, packet]() {
+                                  self->handleNewFrame(packet);
+                              },
+                              Qt::QueuedConnection);
+
+    return GST_FLOW_OK;
+}
+
+#include "CameraPreviewDialog.moc"
+

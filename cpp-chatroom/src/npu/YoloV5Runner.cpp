@@ -70,22 +70,42 @@ bool loadModelFile(const QString &path, std::vector<unsigned char> &buffer, QStr
 
 }  // namespace
 
-bool YoloV5Runner::runSample(const QString &modelPath,
-                             const QString &inputImagePath,
-                             const QString &outputImagePath,
-                             QString *errorOut) const {
+YoloV5Runner::YoloV5Runner()
+    : ctx_(0),
+      ready_(false),
+      inputWidth_(0),
+      inputHeight_(0),
+      inputChannel_(0),
+      ioNum_{} {}
+
+YoloV5Runner::~YoloV5Runner() {
+    release();
+}
+
+void YoloV5Runner::release() {
+    if (ctx_ != 0) {
+        rknn_destroy(ctx_);
+        ctx_ = 0;
+    }
+    ready_ = false;
+    inputWidth_ = 0;
+    inputHeight_ = 0;
+    inputChannel_ = 0;
+    ioNum_ = rknn_input_output_num{};
+    inputAttrs_.clear();
+    outputAttrs_.clear();
+    outputScales_.clear();
+    outputZps_.clear();
+}
+
+bool YoloV5Runner::loadModel(const QString &modelPath, QString *errorOut) {
     QString dummyError;
     QString &err = errorOut ? *errorOut : dummyError;
     err.clear();
 
     QFileInfo modelInfo(modelPath);
-    QFileInfo imageInfo(inputImagePath);
     if (!modelInfo.exists()) {
         err = QStringLiteral("模型文件不存在: %1").arg(modelPath);
-        return false;
-    }
-    if (!imageInfo.exists()) {
-        err = QStringLiteral("输入图像不存在: %1").arg(inputImagePath);
         return false;
     }
 
@@ -94,213 +114,279 @@ bool YoloV5Runner::runSample(const QString &modelPath,
         return false;
     }
 
-    rknn_context ctx = 0;
-    int ret = rknn_init(&ctx, modelData.data(), modelData.size(), 0, nullptr);
+    release();
+
+    int ret = rknn_init(&ctx_, modelData.data(), modelData.size(), 0, nullptr);
     if (ret < 0) {
         err = QStringLiteral("rknn_init 失败, 错误码: %1").arg(ret);
+        release();
         return false;
     }
 
     rknn_sdk_version version{};
-    ret = rknn_query(ctx, RKNN_QUERY_SDK_VERSION, &version, sizeof(version));
+    ret = rknn_query(ctx_, RKNN_QUERY_SDK_VERSION, &version, sizeof(version));
     if (ret < 0) {
         err = QStringLiteral("查询 SDK 版本失败, 错误码: %1").arg(ret);
-        rknn_destroy(ctx);
+        release();
         return false;
     }
     printf("sdk version: %s driver version: %s\n", version.api_version, version.drv_version);
 
-    rknn_input_output_num io_num{};
-    ret = rknn_query(ctx, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num));
+    ret = rknn_query(ctx_, RKNN_QUERY_IN_OUT_NUM, &ioNum_, sizeof(ioNum_));
     if (ret < 0) {
         err = QStringLiteral("查询 IO 数失败, 错误码: %1").arg(ret);
-        rknn_destroy(ctx);
+        release();
         return false;
     }
 
-    printf("\nmodel input num: %d\n", io_num.n_input);
-    std::vector<rknn_tensor_attr> input_attrs(io_num.n_input);
-    for (uint32_t i = 0; i < io_num.n_input; ++i) {
-        input_attrs[i].index = i;
-        ret = rknn_query(ctx, RKNN_QUERY_INPUT_ATTR, &input_attrs[i], sizeof(rknn_tensor_attr));
+    inputAttrs_.resize(ioNum_.n_input);
+    for (uint32_t i = 0; i < ioNum_.n_input; ++i) {
+        inputAttrs_[i].index = i;
+        ret = rknn_query(ctx_, RKNN_QUERY_INPUT_ATTR, &inputAttrs_[i], sizeof(rknn_tensor_attr));
         if (ret < 0) {
             err = QStringLiteral("查询输入属性失败, 错误码: %1").arg(ret);
-            rknn_destroy(ctx);
+            release();
             return false;
         }
-        dumpTensorAttr(&input_attrs[i]);
+        dumpTensorAttr(&inputAttrs_[i]);
     }
 
-    printf("\nmodel output num: %d\n", io_num.n_output);
-    std::vector<rknn_tensor_attr> output_attrs(io_num.n_output);
-    for (uint32_t i = 0; i < io_num.n_output; ++i) {
-        output_attrs[i].index = i;
-        ret = rknn_query(ctx, RKNN_QUERY_OUTPUT_ATTR, &output_attrs[i], sizeof(rknn_tensor_attr));
+    if (inputAttrs_.empty()) {
+        err = QStringLiteral("模型未暴露任何输入");
+        release();
+        return false;
+    }
+
+    if (!inputAttrs_.empty() && inputAttrs_[0].fmt == RKNN_TENSOR_NCHW) {
+        inputChannel_ = inputAttrs_[0].dims[1];
+        inputHeight_ = inputAttrs_[0].dims[2];
+        inputWidth_ = inputAttrs_[0].dims[3];
+    } else if (!inputAttrs_.empty()) {
+        inputHeight_ = inputAttrs_[0].dims[1];
+        inputWidth_ = inputAttrs_[0].dims[2];
+        inputChannel_ = inputAttrs_[0].dims[3];
+    }
+
+    if (inputChannel_ != 3) {
+        err = QStringLiteral("仅支持三通道模型, 当前通道数: %1").arg(inputChannel_);
+        release();
+        return false;
+    }
+
+    printf("model input height=%d, width=%d, channel=%d\n", inputHeight_, inputWidth_, inputChannel_);
+
+    if (ioNum_.n_output < 3) {
+        err = QStringLiteral("模型输出节点不足: %1").arg(ioNum_.n_output);
+        release();
+        return false;
+    }
+
+    outputAttrs_.resize(ioNum_.n_output);
+    outputScales_.clear();
+    outputZps_.clear();
+    outputScales_.reserve(ioNum_.n_output);
+    outputZps_.reserve(ioNum_.n_output);
+
+    for (uint32_t i = 0; i < ioNum_.n_output; ++i) {
+        outputAttrs_[i].index = i;
+        ret = rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &outputAttrs_[i], sizeof(rknn_tensor_attr));
         if (ret < 0) {
             err = QStringLiteral("查询输出属性失败, 错误码: %1").arg(ret);
-            rknn_destroy(ctx);
+            release();
             return false;
         }
-        dumpTensorAttr(&output_attrs[i]);
+        dumpTensorAttr(&outputAttrs_[i]);
+        outputScales_.push_back(outputAttrs_[i].scale);
+        outputZps_.push_back(outputAttrs_[i].zp);
     }
 
-    int channel = 3;
-    int width = 0;
-    int height = 0;
-    if (input_attrs[0].fmt == RKNN_TENSOR_NCHW) {
-        printf("\nmodel input is NCHW\n");
-        channel = input_attrs[0].dims[1];
-        height = input_attrs[0].dims[2];
-        width = input_attrs[0].dims[3];
-    } else {
-        printf("\nmodel input is NHWC\n");
-        height = input_attrs[0].dims[1];
-        width = input_attrs[0].dims[2];
-        channel = input_attrs[0].dims[3];
-    }
+    ready_ = true;
+    return true;
+}
 
-    if (channel != 3) {
-        err = QStringLiteral("仅支持三通道模型, 当前通道数: %1").arg(channel);
-        rknn_destroy(ctx);
+bool YoloV5Runner::isReady() const {
+    return ready_;
+}
+
+int YoloV5Runner::inputWidth() const {
+    return inputWidth_;
+}
+
+int YoloV5Runner::inputHeight() const {
+    return inputHeight_;
+}
+
+bool YoloV5Runner::infer(const cv::Mat &frameBgr,
+                         DetectResultGroup *resultOut,
+                         std::int64_t *inferenceTimeMs,
+                         cv::Mat *visualizedFrame,
+                         QString *errorOut) {
+    QString dummyError;
+    QString &err = errorOut ? *errorOut : dummyError;
+    err.clear();
+
+    if (!ready_) {
+        err = QStringLiteral("模型尚未加载");
+        return false;
+    }
+    if (frameBgr.empty()) {
+        err = QStringLiteral("输入帧为空");
         return false;
     }
 
-    printf("model input height=%d, width=%d, channel=%d\n\n", height, width, channel);
-
-    cv::Mat orig_img = cv::imread(inputImagePath.toStdString(), cv::IMREAD_COLOR);
-    if (orig_img.empty()) {
-        err = QStringLiteral("无法读取输入图片: %1").arg(inputImagePath);
-        rknn_destroy(ctx);
-        return false;
+    if (resultOut) {
+        *resultOut = DetectResultGroup{};
     }
+    DetectResultGroup localGroup{};
+    DetectResultGroup *group = resultOut ? resultOut : &localGroup;
 
     cv::Mat rgb_img;
-    cv::cvtColor(orig_img, rgb_img, cv::COLOR_BGR2RGB);
+    cv::cvtColor(frameBgr, rgb_img, cv::COLOR_BGR2RGB);
 
     cv::Mat resized_img;
-    const int img_width = rgb_img.cols;
-    const int img_height = rgb_img.rows;
-
     rknn_input inputs[1];
     std::memset(inputs, 0, sizeof(inputs));
     inputs[0].index = 0;
     inputs[0].type = RKNN_TENSOR_UINT8;
-    inputs[0].size = width * height * channel;
+    inputs[0].size = inputWidth_ * inputHeight_ * inputChannel_;
     inputs[0].fmt = RKNN_TENSOR_NHWC;
     inputs[0].pass_through = 0;
 
-    if (img_width != width || img_height != height) {
-        cv::resize(rgb_img, resized_img, cv::Size(width, height));
+    if (frameBgr.cols != inputWidth_ || frameBgr.rows != inputHeight_) {
+        cv::resize(rgb_img, resized_img, cv::Size(inputWidth_, inputHeight_));
         inputs[0].buf = resized_img.data;
     } else {
         inputs[0].buf = rgb_img.data;
     }
 
-    ret = rknn_inputs_set(ctx, io_num.n_input, inputs);
+    int ret = rknn_inputs_set(ctx_, ioNum_.n_input, inputs);
     if (ret < 0) {
         err = QStringLiteral("设置输入失败, 错误码: %1").arg(ret);
-        rknn_destroy(ctx);
         return false;
     }
 
-    std::vector<rknn_output> outputs(io_num.n_output);
-    for (uint32_t i = 0; i < io_num.n_output; ++i) {
+    std::vector<rknn_output> outputs(ioNum_.n_output);
+    for (uint32_t i = 0; i < ioNum_.n_output; ++i) {
         outputs[i].index = i;
         outputs[i].want_float = 0;
     }
 
     auto start = std::chrono::steady_clock::now();
-    ret = rknn_run(ctx, nullptr);
+    ret = rknn_run(ctx_, nullptr);
     if (ret < 0) {
         err = QStringLiteral("推理失败, 错误码: %1").arg(ret);
-        rknn_destroy(ctx);
         return false;
     }
 
-    ret = rknn_outputs_get(ctx, io_num.n_output, outputs.data(), nullptr);
+    ret = rknn_outputs_get(ctx_, ioNum_.n_output, outputs.data(), nullptr);
     if (ret < 0) {
         err = QStringLiteral("获取输出失败, 错误码: %1").arg(ret);
-        rknn_destroy(ctx);
         return false;
     }
 
-    const float scale_w = static_cast<float>(width) / static_cast<float>(img_width);
-    const float scale_h = static_cast<float>(height) / static_cast<float>(img_height);
-
-    DetectResultGroup result_group{};
-    std::vector<float> out_scales;
-    std::vector<int32_t> out_zps;
-    out_scales.reserve(io_num.n_output);
-    out_zps.reserve(io_num.n_output);
-
-    for (uint32_t i = 0; i < io_num.n_output; ++i) {
-        out_scales.push_back(output_attrs[i].scale);
-        out_zps.push_back(output_attrs[i].zp);
-    }
+    const float scale_w = static_cast<float>(inputWidth_) / static_cast<float>(frameBgr.cols);
+    const float scale_h = static_cast<float>(inputHeight_) / static_cast<float>(frameBgr.rows);
 
     ret = post_process(static_cast<int8_t *>(outputs[0].buf),
                        static_cast<int8_t *>(outputs[1].buf),
                        static_cast<int8_t *>(outputs[2].buf),
-                       height,
-                       width,
+                       inputHeight_,
+                       inputWidth_,
                        BOX_THRESH,
                        NMS_THRESH,
                        scale_w,
                        scale_h,
-                       out_zps,
-                       out_scales,
-                       &result_group);
+                       outputZps_,
+                       outputScales_,
+                       group);
     if (ret < 0) {
         err = QStringLiteral("后处理失败");
-        rknn_outputs_release(ctx, io_num.n_output, outputs.data());
-        rknn_destroy(ctx);
+        rknn_outputs_release(ctx_, ioNum_.n_output, outputs.data());
         return false;
     }
 
     auto end = std::chrono::steady_clock::now();
-    const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    printf("inference time: %lld ms\n", static_cast<long long>(duration_ms));
-
-    for (int i = 0; i < result_group.count; ++i) {
-        const DetectResult &det = result_group.results[i];
-        cv::rectangle(orig_img,
-                      cv::Point(det.box.left, det.box.top),
-                      cv::Point(det.box.right, det.box.bottom),
-                      cv::Scalar(255, 0, 0),
-                      2);
-
-        char text[256];
-        std::snprintf(text, sizeof(text), "%s %.1f%%", det.name, det.prop * 100.f);
-        int baseLine = 0;
-        cv::Size label_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseLine);
-        int x = det.box.left;
-        int y = det.box.top - label_size.height - baseLine;
-        if (y < 0) y = 0;
-        if (x + label_size.width > orig_img.cols) x = orig_img.cols - label_size.width;
-
-        cv::rectangle(orig_img,
-                      cv::Rect(cv::Point(x, y), cv::Size(label_size.width, label_size.height + baseLine)),
-                      cv::Scalar(255, 255, 255),
-                      cv::FILLED);
-        cv::putText(orig_img,
-                    text,
-                    cv::Point(x, y + label_size.height),
-                    cv::FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    cv::Scalar(0, 0, 0),
-                    1);
+    if (inferenceTimeMs) {
+        *inferenceTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
     }
 
-    rknn_outputs_release(ctx, io_num.n_output, outputs.data());
-    rknn_destroy(ctx);
+    if (visualizedFrame) {
+        frameBgr.copyTo(*visualizedFrame);
+        for (int i = 0; i < group->count; ++i) {
+            const DetectResult &det = group->results[i];
+            cv::rectangle(*visualizedFrame,
+                          cv::Point(det.box.left, det.box.top),
+                          cv::Point(det.box.right, det.box.bottom),
+                          cv::Scalar(255, 0, 0),
+                          2);
 
-    if (!cv::imwrite(outputImagePath.toStdString(), orig_img)) {
+            char text[256];
+            std::snprintf(text, sizeof(text), "%s %.1f%%", det.name, det.prop * 100.f);
+            int baseLine = 0;
+            cv::Size label_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseLine);
+            int x = det.box.left;
+            int y = det.box.top - label_size.height - baseLine;
+            if (y < 0) y = 0;
+            if (x + label_size.width > visualizedFrame->cols) x = visualizedFrame->cols - label_size.width;
+
+            cv::rectangle(*visualizedFrame,
+                          cv::Rect(cv::Point(x, y), cv::Size(label_size.width, label_size.height + baseLine)),
+                          cv::Scalar(255, 255, 255),
+                          cv::FILLED);
+            cv::putText(*visualizedFrame,
+                        text,
+                        cv::Point(x, y + label_size.height),
+                        cv::FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        cv::Scalar(0, 0, 0),
+                        1);
+        }
+    }
+
+    rknn_outputs_release(ctx_, ioNum_.n_output, outputs.data());
+    return true;
+}
+
+bool YoloV5Runner::runSample(const QString &modelPath,
+                             const QString &inputImagePath,
+                             const QString &outputImagePath,
+                             QString *errorOut) {
+    QString dummyError;
+    QString &err = errorOut ? *errorOut : dummyError;
+    err.clear();
+
+    QFileInfo imageInfo(inputImagePath);
+    if (!imageInfo.exists()) {
+        err = QStringLiteral("输入图像不存在: %1").arg(inputImagePath);
+        return false;
+    }
+
+    YoloV5Runner runner;
+    if (!runner.loadModel(modelPath, &err)) {
+        return false;
+    }
+
+    cv::Mat orig_img = cv::imread(inputImagePath.toStdString(), cv::IMREAD_COLOR);
+    if (orig_img.empty()) {
+        err = QStringLiteral("无法读取输入图片: %1").arg(inputImagePath);
+        return false;
+    }
+
+    cv::Mat vis_img;
+    DetectResultGroup detections{};
+    std::int64_t duration_ms = 0;
+    if (!runner.infer(orig_img, &detections, &duration_ms, &vis_img, &err)) {
+        return false;
+    }
+
+    if (!cv::imwrite(outputImagePath.toStdString(), vis_img)) {
         err = QStringLiteral("写出检测结果失败: %1").arg(outputImagePath);
         return false;
     }
 
-    qInfo().noquote() << QStringLiteral("NPU 检测输出: %1 (共 %2 个目标)")
+    qInfo().noquote() << QStringLiteral("NPU 检测输出: %1 (共 %2 个目标, 推理 %3 ms)")
                              .arg(outputImagePath)
-                             .arg(result_group.count);
+                             .arg(detections.count)
+                             .arg(duration_ms);
     return true;
 }
