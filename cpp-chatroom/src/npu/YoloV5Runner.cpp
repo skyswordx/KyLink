@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QFileInfo>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -220,7 +221,8 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
                          DetectResultGroup *resultOut,
                          std::int64_t *inferenceTimeMs,
                          cv::Mat *visualizedFrame,
-                         QString *errorOut) {
+                         QString *errorOut,
+                         InferenceBreakdown *breakdownOut) {
     QString dummyError;
     QString &err = errorOut ? *errorOut : dummyError;
     err.clear();
@@ -239,6 +241,12 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
     }
     DetectResultGroup localGroup{};
     DetectResultGroup *group = resultOut ? resultOut : &localGroup;
+
+    InferenceBreakdown dummyBreakdown;
+    InferenceBreakdown *breakdown = breakdownOut ? breakdownOut : &dummyBreakdown;
+    *breakdown = InferenceBreakdown{};
+
+    const auto preprocessStart = std::chrono::steady_clock::now();
 
     cv::Mat rgb_img;
     cv::cvtColor(frameBgr, rgb_img, cv::COLOR_BGR2RGB);
@@ -265,13 +273,16 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
         return false;
     }
 
+    const auto preprocessEnd = std::chrono::steady_clock::now();
+    breakdown->preprocessUs = std::chrono::duration_cast<std::chrono::microseconds>(preprocessEnd - preprocessStart).count();
+
     std::vector<rknn_output> outputs(ioNum_.n_output);
     for (uint32_t i = 0; i < ioNum_.n_output; ++i) {
         outputs[i].index = i;
         outputs[i].want_float = 0;
     }
 
-    auto start = std::chrono::steady_clock::now();
+    const auto npuStart = std::chrono::steady_clock::now();
     ret = rknn_run(ctx_, nullptr);
     if (ret < 0) {
         err = QStringLiteral("推理失败, 错误码: %1").arg(ret);
@@ -284,9 +295,13 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
         return false;
     }
 
+    const auto npuEnd = std::chrono::steady_clock::now();
+    breakdown->npuUs = std::chrono::duration_cast<std::chrono::microseconds>(npuEnd - npuStart).count();
+
     const float scale_w = static_cast<float>(inputWidth_) / static_cast<float>(frameBgr.cols);
     const float scale_h = static_cast<float>(inputHeight_) / static_cast<float>(frameBgr.rows);
 
+    const auto postStart = std::chrono::steady_clock::now();
     ret = post_process(static_cast<int8_t *>(outputs[0].buf),
                        static_cast<int8_t *>(outputs[1].buf),
                        static_cast<int8_t *>(outputs[2].buf),
@@ -305,9 +320,12 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
         return false;
     }
 
-    auto end = std::chrono::steady_clock::now();
+    const auto postEnd = std::chrono::steady_clock::now();
+    breakdown->postprocessUs = std::chrono::duration_cast<std::chrono::microseconds>(postEnd - postStart).count();
+
     if (inferenceTimeMs) {
-        *inferenceTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+        const qint64 combinedUs = std::max<qint64>(0, breakdown->npuUs) + std::max<qint64>(0, breakdown->postprocessUs);
+        *inferenceTimeMs = combinedUs / 1000;
     }
 
     if (visualizedFrame) {
@@ -375,7 +393,7 @@ bool YoloV5Runner::runSample(const QString &modelPath,
     cv::Mat vis_img;
     DetectResultGroup detections{};
     std::int64_t duration_ms = 0;
-    if (!runner.infer(orig_img, &detections, &duration_ms, &vis_img, &err)) {
+    if (!runner.infer(orig_img, &detections, &duration_ms, &vis_img, &err, nullptr)) {
         return false;
     }
 

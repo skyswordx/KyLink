@@ -26,11 +26,13 @@ class QResizeEvent;
 class QThread;
 
 struct FramePacket {
+    quint64 frameId = 0;
     int width = 0;
     int height = 0;
     int stride = 0;
     QByteArray data;
     std::int64_t pts = 0;
+    qint64 captureTimestampNs = 0;
 };
 
 Q_DECLARE_METATYPE(FramePacket)
@@ -56,7 +58,7 @@ private slots:
     void onDeviceChanged(int index);
     void onStartStopClicked();
     void processBusMessages();
-    void onInferenceFrameReady(const QImage& image, int objectCount, qint64 inferenceTimeMs);
+    void onInferenceFrameReady(quint64 frameId, const QImage& image, int objectCount, qint64 inferenceTimeMs);
     void onInferenceError(const QString& errorText);
 
 private:

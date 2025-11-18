@@ -104,11 +104,7 @@ kylin@kylin:~/Desktop$ ldd FeiQChatroom
 	libgpg-error.so.0 => /lib/aarch64-linux-gnu/libgpg-error.so.0 (0x0000007f87c13000)
 kylin@kylin:~/Desktop$ 
 
-
-
-
 sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libv4l-dev v4l-utils libopenblas-dev libgtk2.0-dev libavcodec-dev libavformat-dev libswscale-dev libtbb2 libtbb-dev libjpeg-dev libpng-dev libtiff-dev libdc1394-22-dev
-
 
 kylin@kylin:~/Desktop$ GST_DEBUG=3 gst-launch-1.0 v4l2src device=/dev/video10 ! videoconvert ! autovideosink
 Setting pipeline to PAUSED ...
@@ -116,7 +112,6 @@ Pipeline is live and does not need PREROLL ...
 Setting pipeline to PLAYING ...
 New clock: GstSystemClock
 0:00:00.964129763 20686   0x55a1a8fa40 WARN                 v4l2src gstv4l2src.c:978:gst_v4l2src_create:<v4l2src0> lost frames detected: count = 2 - ts: 0:00:00.646451268
-
 
 
 kylin@kylin:~/Desktop$ ./FeiQChatroom 

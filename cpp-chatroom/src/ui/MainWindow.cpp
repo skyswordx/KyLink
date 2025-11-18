@@ -3,6 +3,7 @@
 #include "ui/SettingsDialog.h"
 #include "ui/AboutDialog.h"
 #include "ui/GroupChatDialog.h"
+#include "ui/PerformanceAnalyticsDialog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -16,7 +17,6 @@
 #include <QDebug>
 #include <QSettings>
 #include <QDateTime>
-#include <QInputDialog>
 #include <algorithm>
 
 namespace
@@ -43,12 +43,11 @@ MainWindow::MainWindow(QWidget* parent)
     , m_groupMessageButton(nullptr)
     , m_fileMenu(nullptr)
     , m_helpMenu(nullptr)
-    , m_testMenu(nullptr)
+    , m_performanceMenu(nullptr)
     , m_settingsAction(nullptr)
     , m_exitAction(nullptr)
     , m_aboutAction(nullptr)
-    , m_testSendMessageAction(nullptr)
-    , m_testSendFileAction(nullptr)
+    , m_openPerformanceAction(nullptr)
     , m_backend(new FeiqBackend(this))
 {
     loadSettings();
@@ -132,17 +131,14 @@ void MainWindow::setupMenuBar()
     m_aboutAction = new QAction("关于(&A)...", this);
     m_helpMenu->addAction(m_aboutAction);
 
-    m_testMenu = menuBar()->addMenu("测试(&T)");
-    m_testSendMessageAction = new QAction("测试用户发送消息", this);
-    m_testSendFileAction = new QAction("测试用户发送文件", this);
-    m_testMenu->addAction(m_testSendMessageAction);
-    m_testMenu->addAction(m_testSendFileAction);
+    m_performanceMenu = menuBar()->addMenu(tr("性能分析(&P)"));
+    m_openPerformanceAction = new QAction(tr("打开性能分析面板"), this);
+    m_performanceMenu->addAction(m_openPerformanceAction);
     
     connect(m_settingsAction, &QAction::triggered, this, &MainWindow::onSettingsClicked);
     connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
     connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAboutClicked);
-    connect(m_testSendMessageAction, &QAction::triggered, this, &MainWindow::onTestUserSendMessage);
-    connect(m_testSendFileAction, &QAction::triggered, this, &MainWindow::onTestUserSendFile);
+    connect(m_openPerformanceAction, &QAction::triggered, this, &MainWindow::onOpenPerformanceAnalytics);
 }
 
 void MainWindow::loadSettings()
@@ -484,54 +480,19 @@ void MainWindow::onAboutClicked()
     dialog->exec();
 }
 
-void MainWindow::onTestUserSendMessage()
+void MainWindow::onOpenPerformanceAnalytics()
 {
-    if (!m_backend) {
-        return;
+    if (!m_performanceDialog) {
+        m_performanceDialog = new PerformanceAnalyticsDialog(this);
+        m_performanceDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(m_performanceDialog.data(), &QObject::destroyed, this, [this]() {
+            m_performanceDialog = nullptr;
+        });
     }
 
-    bool ok = false;
-    QString text = QInputDialog::getText(this,
-                                         tr("测试用户消息"),
-                                         tr("输入测试用户要发送的消息:"),
-                                         QLineEdit::Normal,
-                                         tr("你好！这是测试用户。"),
-                                         &ok);
-    if (!ok) {
-        return;
-    }
-
-    text = text.trimmed();
-    if (text.isEmpty()) {
-        return;
-    }
-
-    m_backend->simulateTestUserIncomingText(text);
-}
-
-void MainWindow::onTestUserSendFile()
-{
-    if (!m_backend) {
-        return;
-    }
-
-    bool ok = false;
-    QString fileName = QInputDialog::getText(this,
-                                             tr("测试用户文件"),
-                                             tr("输入测试文件名:"),
-                                             QLineEdit::Normal,
-                                             tr("loopback.txt"),
-                                             &ok);
-    if (!ok) {
-        return;
-    }
-
-    fileName = fileName.trimmed();
-    if (fileName.isEmpty()) {
-        fileName = QStringLiteral("loopback.txt");
-    }
-
-    m_backend->simulateTestUserIncomingFile(fileName);
+    m_performanceDialog->show();
+    m_performanceDialog->raise();
+    m_performanceDialog->activateWindow();
 }
 
 void MainWindow::appendTextToChat(const QString& targetIp, const QString& message,

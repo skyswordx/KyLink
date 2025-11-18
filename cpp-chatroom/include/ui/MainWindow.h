@@ -1,17 +1,18 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include <QMainWindow>
-#include <QTreeWidget>
-#include <QLineEdit>
-#include <QLabel>
-#include <QPushButton>
-#include <QMap>
-#include <QString>
-#include <QVariant>
-#include <QMenuBar>
-#include <QMenu>
 #include <QAction>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMainWindow>
+#include <QMap>
+#include <QMenu>
+#include <QMenuBar>
+#include <QPointer>
+#include <QPushButton>
+#include <QString>
+#include <QTreeWidget>
+#include <QVariant>
 #include "backend/FeiqBackend.h"
 #include "domain/FeiqTypes.h"
 
@@ -19,6 +20,7 @@ class ChatWindow;
 class SettingsDialog;
 class AboutDialog;
 class GroupChatDialog;
+class PerformanceAnalyticsDialog;
 
 class MainWindow : public QMainWindow
 {
@@ -50,8 +52,7 @@ private slots:
     void onSendFileRequest(const QString& targetIp, const QString& filePath);
     void onSettingsClicked();
     void onAboutClicked();
-    void onTestUserSendMessage();
-    void onTestUserSendFile();
+    void onOpenPerformanceAnalytics();
     
     // 供GroupChatDialog调用的公共方法
     void appendFileOfferToChat(const QString& targetIp, const FeiqFileOffer& offer,
@@ -79,12 +80,11 @@ private:
     // 菜单
     QMenu* m_fileMenu;
     QMenu* m_helpMenu;
-    QMenu* m_testMenu;
+    QMenu* m_performanceMenu;
     QAction* m_settingsAction;
     QAction* m_exitAction;
     QAction* m_aboutAction;
-    QAction* m_testSendMessageAction;
-    QAction* m_testSendFileAction;
+    QAction* m_openPerformanceAction;
     
     // 数据
     QString m_username;
@@ -94,6 +94,7 @@ private:
     FeiqBackend* m_backend;
     QMap<QString, FeiqFellowInfo> m_users;  // IP -> UserInfo
     QMap<QString, ChatWindow*> m_chatWindows;      // IP -> ChatWindow
+    QPointer<PerformanceAnalyticsDialog> m_performanceDialog;
 };
 
 #endif // MAINWINDOW_H

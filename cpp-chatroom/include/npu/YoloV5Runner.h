@@ -2,6 +2,7 @@
 #define RK3566_CHATROOM_YOLOV5RUNNER_H
 
 #include <QString>
+#include <QtGlobal>
 
 #include "npu/postprocess.h"
 
@@ -16,6 +17,12 @@ class Mat;
 
 class YoloV5Runner {
 public:
+    struct InferenceBreakdown {
+        qint64 preprocessUs = -1;
+        qint64 npuUs = -1;
+        qint64 postprocessUs = -1;
+    };
+
     YoloV5Runner();
     ~YoloV5Runner();
 
@@ -28,7 +35,8 @@ public:
                DetectResultGroup *resultOut,
                std::int64_t *inferenceTimeMs,
                cv::Mat *visualizedFrame,
-               QString *errorOut);
+               QString *errorOut,
+               InferenceBreakdown *breakdownOut = nullptr);
 
     static bool runSample(const QString &modelPath,
                           const QString &inputImagePath,

@@ -1,5 +1,6 @@
 #include "ui/CameraPreviewDialog.h"
 
+#include "backend/PerformanceMonitor.h"
 #include "npu/YoloV5Runner.h"
 
 #include <QCloseEvent>
@@ -18,6 +19,7 @@
 #include <QVBoxLayout>
 
 #include <atomic>
+#include <chrono>
 #include <mutex>
 
 #include <gst/app/gstappsink.h>
@@ -63,14 +65,31 @@ public slots:
                       const_cast<char*>(packet.data.constData()),
                       packet.stride);
 
+        const auto preprocessStart = std::chrono::steady_clock::now();
+        qint64 captureToPreprocessUs = -1;
+        if (packet.captureTimestampNs > 0) {
+            const qint64 preprocessStartNs = std::chrono::duration_cast<std::chrono::nanoseconds>(preprocessStart.time_since_epoch()).count();
+            captureToPreprocessUs = (preprocessStartNs - packet.captureTimestampNs) / 1000;
+        }
+
         DetectResultGroup detections{};
         std::int64_t inferenceTimeMs = 0;
         cv::Mat visualized;
         QString error;
-        if (!runner_.infer(frame, &detections, &inferenceTimeMs, &visualized, &error)) {
+        YoloV5Runner::InferenceBreakdown breakdown;
+        if (!runner_.infer(frame, &detections, &inferenceTimeMs, &visualized, &error, &breakdown)) {
             emit inferenceError(error);
             return;
         }
+
+        const auto detectionComplete = std::chrono::steady_clock::now();
+        const qint64 detectionCompleteNs = std::chrono::duration_cast<std::chrono::nanoseconds>(detectionComplete.time_since_epoch()).count();
+        PerformanceMonitor::instance()->recordDetectionStages(packet.frameId,
+                                                              captureToPreprocessUs,
+                                                              breakdown.preprocessUs,
+                                                              breakdown.npuUs,
+                                                              breakdown.postprocessUs,
+                                                              detectionCompleteNs);
 
         cv::Mat display;
         cv::cvtColor(visualized, display, cv::COLOR_BGR2RGB);
@@ -80,11 +99,14 @@ public slots:
                      display.rows,
                      display.step,
                      QImage::Format_RGB888);
-        emit inferenceReady(image.copy(), detections.count, static_cast<qint64>(inferenceTimeMs));
+        emit inferenceReady(packet.frameId,
+                            image.copy(),
+                            detections.count,
+                            static_cast<qint64>(inferenceTimeMs));
     }
 
 signals:
-    void inferenceReady(const QImage& image, int objectCount, qint64 inferenceTimeMs);
+    void inferenceReady(quint64 frameId, const QImage& image, int objectCount, qint64 inferenceTimeMs);
     void inferenceError(const QString& errorText);
 
 private:
@@ -540,8 +562,10 @@ void CameraPreviewDialog::updateDisplayedPixmap()
     m_videoLabel->setText(QString());
 }
 
-void CameraPreviewDialog::onInferenceFrameReady(const QImage& image, int objectCount, qint64 inferenceTimeMs)
+void CameraPreviewDialog::onInferenceFrameReady(quint64 frameId, const QImage& image, int objectCount, qint64 inferenceTimeMs)
 {
+    const auto renderStart = std::chrono::steady_clock::now();
+
     m_processingFrame = false;
 
     if (image.isNull()) {
@@ -556,6 +580,11 @@ void CameraPreviewDialog::onInferenceFrameReady(const QImage& image, int objectC
     }
 
     updateStatusText(tr("预览中 - 目标 %1, 推理 %2 ms").arg(objectCount).arg(inferenceTimeMs));
+
+    const auto renderEnd = std::chrono::steady_clock::now();
+    const qint64 renderDurationUs = std::chrono::duration_cast<std::chrono::microseconds>(renderEnd - renderStart).count();
+    const qint64 renderCompleteNs = std::chrono::duration_cast<std::chrono::nanoseconds>(renderEnd.time_since_epoch()).count();
+    PerformanceMonitor::instance()->recordRenderStage(frameId, renderDurationUs, renderCompleteNs);
 }
 
 void CameraPreviewDialog::onInferenceError(const QString& errorText)
@@ -621,6 +650,8 @@ GstFlowReturn CameraPreviewDialog::onAppSinkNewSample(GstAppSink* sink, gpointer
     packet.stride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 0);
     packet.data = QByteArray(reinterpret_cast<const char*>(mapInfo.data), static_cast<int>(mapInfo.size));
     packet.pts = static_cast<std::int64_t>(GST_BUFFER_PTS(buffer));
+    packet.captureTimestampNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    packet.frameId = PerformanceMonitor::instance()->recordFrameCaptured(packet.captureTimestampNs);
 
     gst_buffer_unmap(buffer, &mapInfo);
     gst_sample_unref(sample);

@@ -61,6 +61,7 @@ file(GLOB UI_FILES "${CMAKE_SOURCE_DIR}/ui/*.ui")
 set(SOURCES
     src/app/main.cpp
     src/backend/FeiqBackend.cpp
+    src/backend/PerformanceMonitor.cpp
     src/npu/YoloV5Runner.cpp
     src/npu/postprocess.cpp
     src/ui/AboutDialog.cpp
@@ -68,12 +69,14 @@ set(SOURCES
     src/ui/CameraPreviewDialog.cpp
     src/ui/GroupChatDialog.cpp
     src/ui/MainWindow.cpp
+    src/ui/PerformanceAnalyticsDialog.cpp
     src/ui/ScreenshotTool.cpp
     src/ui/SettingsDialog.cpp
 )
 
 set(HEADERS
     include/backend/FeiqBackend.h
+    include/backend/PerformanceMonitor.h
     include/domain/FeiqTypes.h
     include/npu/YoloV5Runner.h
     include/npu/postprocess.h
@@ -82,6 +85,7 @@ set(HEADERS
     include/ui/CameraPreviewDialog.h
     include/ui/GroupChatDialog.h
     include/ui/MainWindow.h
+    include/ui/PerformanceAnalyticsDialog.h
     include/ui/ScreenshotTool.h
     include/ui/SettingsDialog.h
 )
