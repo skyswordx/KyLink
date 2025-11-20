@@ -6,6 +6,7 @@
 
 #include "npu/postprocess.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -23,6 +24,14 @@ public:
         qint64 postprocessUs = -1;
     };
 
+    struct InputTensorView {
+        uint8_t *data = nullptr;
+        int stride = 0;
+        int dmaFd = -1;
+
+        bool isValid() const { return data != nullptr && stride > 0; }
+    };
+
     YoloV5Runner();
     ~YoloV5Runner();
 
@@ -30,6 +39,7 @@ public:
     bool isReady() const;
     int inputWidth() const;
     int inputHeight() const;
+    InputTensorView inputTensorView() const;
 
     bool infer(const cv::Mat &frameBgr,
                DetectResultGroup *resultOut,
@@ -43,6 +53,7 @@ public:
                             int originalHeight,
                             const uint8_t *rgbData,
                             int rgbStride,
+                            const LetterboxTransform &letterbox,
                             DetectResultGroup *resultOut,
                             std::int64_t *inferenceTimeMs,
                             cv::Mat *visualizedFrame,
@@ -60,11 +71,16 @@ private:
                               int originalWidth,
                               int originalHeight,
                               const uint8_t *inputBuffer,
+                              bool inputMatchesBoundMemory,
+                              const LetterboxTransform &letterbox,
                               QString &err,
                               DetectResultGroup *group,
                               std::int64_t *inferenceTimeMs,
                               cv::Mat *visualizedFrame,
                               InferenceBreakdown *breakdown);
+    bool initializeInputMemory(QString &err);
+    void releaseInputMemory();
+    std::size_t inputBufferBytes() const;
 
     rknn_context ctx_;
     bool ready_;
@@ -76,6 +92,8 @@ private:
     std::vector<rknn_tensor_attr> outputAttrs_;
     std::vector<float> outputScales_;
     std::vector<int32_t> outputZps_;
+    rknn_tensor_mem *inputMem_;
+    InputTensorView inputTensorView_;
 };
 
 #endif

@@ -194,10 +194,11 @@ int post_process(int8_t *input0,
                  int8_t *input2,
                  int model_in_h,
                  int model_in_w,
+                 int original_img_h,
+                 int original_img_w,
                  float conf_threshold,
                  float nms_threshold,
-                 float scale_w,
-                 float scale_h,
+                 const LetterboxTransform &letterbox,
                  std::vector<int32_t> &qnt_zps,
                  std::vector<float> &qnt_scales,
                  DetectResultGroup *group) {
@@ -282,6 +283,29 @@ int post_process(int8_t *input0,
 
     int last_count = 0;
     group->count = 0;
+    const float fallbackInvScaleW = (model_in_w > 0 && original_img_w > 0)
+                                        ? static_cast<float>(original_img_w) / static_cast<float>(model_in_w)
+                                        : 1.f;
+    const float fallbackInvScaleH = (model_in_h > 0 && original_img_h > 0)
+                                        ? static_cast<float>(original_img_h) / static_cast<float>(model_in_h)
+                                        : 1.f;
+
+    auto convertCoord = [&](float value, bool isX) {
+        if (letterbox.isValid() && letterbox.scaleX > 0.f && letterbox.scaleY > 0.f) {
+            const float scale = isX ? letterbox.scaleX : letterbox.scaleY;
+            const float pad = isX ? static_cast<float>(letterbox.padLeft)
+                                  : static_cast<float>(letterbox.padTop);
+            const float unpadded = (value - pad) / scale;
+            return clamp_int(unpadded,
+                             0,
+                             isX ? original_img_w : original_img_h);
+        }
+        const float fallback = isX ? fallbackInvScaleW : fallbackInvScaleH;
+        return clamp_int(value * fallback,
+                         0,
+                         isX ? original_img_w : original_img_h);
+    };
+
     for (int i = 0; i < valid_count; ++i) {
         if (index_array[i] == -1 || last_count >= OBJ_NUMB_MAX_SIZE) {
             continue;
@@ -294,10 +318,10 @@ int post_process(int8_t *input0,
         int cls = class_ids[n];
         float obj_conf = object_probs[i];
 
-        group->results[last_count].box.left = clamp_int(x1, 0, model_in_w) / scale_w;
-        group->results[last_count].box.top = clamp_int(y1, 0, model_in_h) / scale_h;
-        group->results[last_count].box.right = clamp_int(x2, 0, model_in_w) / scale_w;
-        group->results[last_count].box.bottom = clamp_int(y2, 0, model_in_h) / scale_h;
+        group->results[last_count].box.left = convertCoord(x1, true);
+        group->results[last_count].box.top = convertCoord(y1, false);
+        group->results[last_count].box.right = convertCoord(x2, true);
+        group->results[last_count].box.bottom = convertCoord(y2, false);
         group->results[last_count].prop = obj_conf;
         std::strncpy(group->results[last_count].name, kLabels[cls], OBJ_NAME_MAX_SIZE - 1);
         group->results[last_count].name[OBJ_NAME_MAX_SIZE - 1] = '\0';

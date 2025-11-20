@@ -19,6 +19,10 @@
 #include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QPainter>
+#include <QPen>
+#include <QFont>
+#include <QFontMetrics>
 
 #include <atomic>
 #include <chrono>
@@ -77,22 +81,8 @@ public slots:
 
         const bool isNv12 = (packet.videoFormat == GST_VIDEO_FORMAT_NV12);
         cv::Mat frameBgr;
-        if (isNv12) {
-            const int yStride = packet.yStride > 0 ? packet.yStride : packet.width;
-            const int uvStride = packet.uvStride > 0 ? packet.uvStride : packet.width;
-            cv::Mat yPlane(packet.height,
-                           packet.width,
-                           CV_8UC1,
-                           const_cast<char*>(packet.data.constData() + packet.yPlaneOffset),
-                           yStride);
-            cv::Mat uvPlane(packet.height / 2,
-                            packet.width / 2,
-                            CV_8UC2,
-                            const_cast<char*>(packet.data.constData() + packet.uvPlaneOffset),
-                            uvStride);
-            frameBgr.create(packet.height, packet.width, CV_8UC3);
-            cv::cvtColorTwoPlane(yPlane, uvPlane, frameBgr, cv::COLOR_YUV2BGR_NV12);
-        } else {
+        // 移除 CPU 转换，仅在非 NV12 且非 RGA 路径时作为回退
+        if (!isNv12) {
             frameBgr = cv::Mat(packet.height,
                                packet.width,
                                CV_8UC3,
@@ -116,6 +106,8 @@ public slots:
         }
 
         RgaPreprocessor::Result prepResult;
+        RgaPreprocessor::Result displayResult; // 新增：显示结果
+
         struct AutoCloseFd {
             int fd;
             ~AutoCloseFd() {
@@ -135,10 +127,26 @@ public slots:
             nv12Input.yPlaneOffset = packet.yPlaneOffset;
             nv12Input.uvPlaneOffset = packet.uvPlaneOffset;
             nv12Input.dmaFd = packet.dmaFd;
+            
+            // 1. RGA -> NPU Input (640x640)
             prepResult = preprocessor_.processNv12(nv12Input);
+
+            // 2. RGA -> Display Image (Scaled to e.g. 960x540 for UI performance)
+            // 使用较小的分辨率可以显著降低 Qt 渲染 (QPixmap::fromImage + scaled) 的耗时
+            // 保持 16:9 比例
+            displayResult = preprocessor_.processNv12ToDisplay(nv12Input, 960, 540);
+
         } else {
+            // 回退路径
             prepResult = preprocessor_.processBgr(frameBgr);
+            // 对于 BGR 输入，直接 clone 一份用于显示（或者也应该用 RGA 缩放，这里简化处理）
+            if (prepResult.success) {
+                // 模拟 displayResult
+                displayResult.success = true;
+                displayResult.data = nullptr; // 标记需要特殊处理
+            }
         }
+
         if (!prepResult.success) {
             emit inferenceError(tr("RGA 预处理失败: %1").arg(prepResult.error));
             return;
@@ -146,28 +154,27 @@ public slots:
 
         DetectResultGroup detections{};
         std::int64_t inferenceTimeMs = 0;
-        cv::Mat visualized;
         QString error;
         YoloV5Runner::InferenceBreakdown breakdown;
         breakdown.preprocessUs = prepResult.durationUs;
 
-        bool inferenceOk = runner_.inferFromRgbBuffer(frameBgr,
-                                                      frameBgr.cols,
-                                                      frameBgr.rows,
+        // 传入空的 originalFrameBgr 和 nullptr visualizedFrame，避免 YoloV5Runner 内部的 OpenCV 绘图和拷贝
+        bool inferenceOk = runner_.inferFromRgbBuffer(cv::Mat(), // 空 Mat
+                                                      packet.width, // 原始宽
+                                                      packet.height, // 原始高
                                                       prepResult.data,
                                                       prepResult.stride,
+                                                      prepResult.letterbox,
                                                       &detections,
                                                       &inferenceTimeMs,
-                                                      &visualized,
+                                                      nullptr, // 不生成 visualizedFrame
                                                       &error,
                                                       &breakdown);
+        
         if (!inferenceOk) {
-            qWarning() << "RGA 预处理推理失败，回退 CPU 路径:" << error;
-            breakdown = YoloV5Runner::InferenceBreakdown{};
-            if (!runner_.infer(frameBgr, &detections, &inferenceTimeMs, &visualized, &error, &breakdown)) {
-                emit inferenceError(error);
-                return;
-            }
+             // ... error handling ...
+             emit inferenceError(error);
+             return;
         }
 
         const auto detectionComplete = std::chrono::steady_clock::now();
@@ -179,16 +186,57 @@ public slots:
                                                               breakdown.postprocessUs,
                                                               detectionCompleteNs);
 
-        cv::Mat display;
-        cv::cvtColor(visualized, display, cv::COLOR_BGR2RGB);
+        // 准备显示图像
+        QImage image;
+        if (displayResult.success && displayResult.data) {
+            // 使用 RGA 生成的 RGB 数据
+            // 注意：QImage 默认不拷贝数据，所以需要 copy() 或者确保数据生命周期
+            // 这里我们直接 copy() 一份发送给 UI 线程，这样 Worker 线程的 buffer 可以复用
+            image = QImage(displayResult.data,
+                           displayResult.width,
+                           displayResult.height,
+                           displayResult.stride,
+                           QImage::Format_RGB888).copy();
+        } else if (!frameBgr.empty()) {
+             // 回退：BGR -> RGB
+             cv::Mat rgb;
+             cv::cvtColor(frameBgr, rgb, cv::COLOR_BGR2RGB);
+             image = QImage(rgb.data, rgb.cols, rgb.rows, rgb.step, QImage::Format_RGB888).copy();
+        }
 
-        QImage image(display.data,
-                     display.cols,
-                     display.rows,
-                     display.step,
-                     QImage::Format_RGB888);
+        if (!image.isNull()) {
+            // 使用 QPainter 在 QImage 上绘制检测框
+            // 需要将检测框坐标从 原始分辨率 映射到 显示分辨率
+            QPainter painter(&image);
+            painter.setPen(QPen(Qt::red, 2));
+            painter.setFont(QFont("Arial", 10));
+
+            const float scaleX = static_cast<float>(image.width()) / static_cast<float>(packet.width);
+            const float scaleY = static_cast<float>(image.height()) / static_cast<float>(packet.height);
+
+            for (int i = 0; i < detections.count; ++i) {
+                const auto& det = detections.results[i];
+                int x = static_cast<int>(det.box.left * scaleX);
+                int y = static_cast<int>(det.box.top * scaleY);
+                int w = static_cast<int>((det.box.right - det.box.left) * scaleX);
+                int h = static_cast<int>((det.box.bottom - det.box.top) * scaleY);
+
+                painter.drawRect(x, y, w, h);
+                
+                QString label = QString("%1 %2%").arg(det.name).arg(static_cast<int>(det.prop * 100));
+                // 绘制文字背景
+                QFontMetrics fm(painter.font());
+                int textW = fm.horizontalAdvance(label);
+                int textH = fm.height();
+                painter.fillRect(x, y - textH, textW + 4, textH, Qt::red);
+                painter.setPen(Qt::white);
+                painter.drawText(x + 2, y - 2, label);
+                painter.setPen(QPen(Qt::red, 2)); // 恢复画笔
+            }
+        }
+
         emit inferenceReady(packet.frameId,
-                            image.copy(),
+                            image, // 已经是 copy 过的
                             detections.count,
                             static_cast<qint64>(inferenceTimeMs));
     }

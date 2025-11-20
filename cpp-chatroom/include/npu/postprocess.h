@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "npu/InferenceGeometry.h"
+
 #define OBJ_NAME_MAX_SIZE 16
 #define OBJ_NUMB_MAX_SIZE 64
 #define OBJ_CLASS_NUM 80
@@ -37,10 +39,11 @@ int post_process(int8_t *input0,
                  int8_t *input2,
                  int model_in_h,
                  int model_in_w,
+                 int original_img_h,
+                 int original_img_w,
                  float conf_threshold,
                  float nms_threshold,
-                 float scale_w,
-                 float scale_h,
+                 const LetterboxTransform &letterbox,
                  std::vector<int32_t> &qnt_zps,
                  std::vector<float> &qnt_scales,
                  DetectResultGroup *group);

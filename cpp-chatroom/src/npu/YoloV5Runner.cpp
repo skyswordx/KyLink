@@ -74,18 +74,21 @@ bool loadModelFile(const QString &path, std::vector<unsigned char> &buffer, QStr
 }  // namespace
 
 YoloV5Runner::YoloV5Runner()
-    : ctx_(0),
-      ready_(false),
-      inputWidth_(0),
-      inputHeight_(0),
-      inputChannel_(0),
-      ioNum_{} {}
+        : ctx_(0),
+            ready_(false),
+            inputWidth_(0),
+            inputHeight_(0),
+            inputChannel_(0),
+            ioNum_{},
+            inputMem_(nullptr),
+            inputTensorView_{} {}
 
 YoloV5Runner::~YoloV5Runner() {
     release();
 }
 
 void YoloV5Runner::release() {
+    releaseInputMemory();
     if (ctx_ != 0) {
         PerformanceMonitor::instance()->setNpuContext(0);
         rknn_destroy(ctx_);
@@ -204,6 +207,12 @@ bool YoloV5Runner::loadModel(const QString &modelPath, QString *errorOut) {
         outputZps_.push_back(outputAttrs_[i].zp);
     }
 
+    if (!initializeInputMemory(err)) {
+        ready_ = false;
+        release();
+        return false;
+    }
+
     ready_ = true;
     PerformanceMonitor::instance()->setNpuContext(ctx_);
     return true;
@@ -219,6 +228,10 @@ int YoloV5Runner::inputWidth() const {
 
 int YoloV5Runner::inputHeight() const {
     return inputHeight_;
+}
+
+YoloV5Runner::InputTensorView YoloV5Runner::inputTensorView() const {
+    return inputTensorView_;
 }
 
 bool YoloV5Runner::infer(const cv::Mat &frameBgr,
@@ -265,10 +278,26 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
     const auto preprocessEnd = std::chrono::steady_clock::now();
     breakdown->preprocessUs = std::chrono::duration_cast<std::chrono::microseconds>(preprocessEnd - preprocessStart).count();
 
+    LetterboxTransform letterbox;
+    letterbox.scaleX = inputWidth_ > 0 && frameBgr.cols > 0 ? static_cast<float>(inputWidth_) / static_cast<float>(frameBgr.cols) : 1.f;
+    letterbox.scaleY = inputHeight_ > 0 && frameBgr.rows > 0 ? static_cast<float>(inputHeight_) / static_cast<float>(frameBgr.rows) : 1.f;
+    letterbox.contentWidth = inputWidth_;
+    letterbox.contentHeight = inputHeight_;
+
+    const uint8_t *bufferPtr = inputMat->data;
+    bool matchesBound = false;
+    if (inputTensorView_.isValid() && inputBufferBytes() > 0) {
+        std::memcpy(inputTensorView_.data, bufferPtr, inputBufferBytes());
+        bufferPtr = inputTensorView_.data;
+        matchesBound = true;
+    }
+
     return runInferenceInternal(frameBgr,
                                 frameBgr.cols,
                                 frameBgr.rows,
-                                inputMat->data,
+                                bufferPtr,
+                                matchesBound,
+                                letterbox,
                                 err,
                                 group,
                                 inferenceTimeMs,
@@ -281,6 +310,7 @@ bool YoloV5Runner::inferFromRgbBuffer(const cv::Mat &originalFrameBgr,
                                       int originalHeight,
                                       const uint8_t *rgbData,
                                       int rgbStride,
+                                      const LetterboxTransform &letterbox,
                                       DetectResultGroup *resultOut,
                                       std::int64_t *inferenceTimeMs,
                                       cv::Mat *visualizedFrame,
@@ -317,10 +347,20 @@ bool YoloV5Runner::inferFromRgbBuffer(const cv::Mat &originalFrameBgr,
         return false;
     }
 
+    bool matchesBoundMemory = inputTensorView_.isValid() && rgbData == inputTensorView_.data;
+    const std::size_t expectedBytes = inputBufferBytes();
+    if (!matchesBoundMemory && inputTensorView_.isValid() && expectedBytes > 0) {
+        std::memcpy(inputTensorView_.data, rgbData, expectedBytes);
+        rgbData = inputTensorView_.data;
+        matchesBoundMemory = true;
+    }
+
     return runInferenceInternal(originalFrameBgr,
                                 width,
                                 height,
                                 rgbData,
+                                matchesBoundMemory,
+                                letterbox,
                                 err,
                                 group,
                                 inferenceTimeMs,
@@ -332,6 +372,8 @@ bool YoloV5Runner::runInferenceInternal(const cv::Mat &originalFrameBgr,
                                         int originalWidth,
                                         int originalHeight,
                                         const uint8_t *inputBuffer,
+                                        bool inputMatchesBoundMemory,
+                                        const LetterboxTransform &letterbox,
                                         QString &err,
                                         DetectResultGroup *group,
                                         std::int64_t *inferenceTimeMs,
@@ -342,19 +384,21 @@ bool YoloV5Runner::runInferenceInternal(const cv::Mat &originalFrameBgr,
         return false;
     }
 
-    rknn_input inputs[1];
-    std::memset(inputs, 0, sizeof(inputs));
-    inputs[0].index = 0;
-    inputs[0].type = RKNN_TENSOR_UINT8;
-    inputs[0].size = inputWidth_ * inputHeight_ * inputChannel_;
-    inputs[0].fmt = RKNN_TENSOR_NHWC;
-    inputs[0].pass_through = 0;
-    inputs[0].buf = const_cast<uint8_t *>(inputBuffer);
+    if (!inputMatchesBoundMemory || !inputTensorView_.isValid()) {
+        rknn_input inputs[1];
+        std::memset(inputs, 0, sizeof(inputs));
+        inputs[0].index = 0;
+        inputs[0].type = RKNN_TENSOR_UINT8;
+        inputs[0].size = inputWidth_ * inputHeight_ * inputChannel_;
+        inputs[0].fmt = RKNN_TENSOR_NHWC;
+        inputs[0].pass_through = 0;
+        inputs[0].buf = const_cast<uint8_t *>(inputBuffer);
 
-    int ret = rknn_inputs_set(ctx_, ioNum_.n_input, inputs);
-    if (ret < 0) {
-        err = QStringLiteral("设置输入失败, 错误码: %1").arg(ret);
-        return false;
+        int setRet = rknn_inputs_set(ctx_, ioNum_.n_input, inputs);
+        if (setRet < 0) {
+            err = QStringLiteral("设置输入失败, 错误码: %1").arg(setRet);
+            return false;
+        }
     }
 
     std::vector<rknn_output> outputs(ioNum_.n_output);
@@ -364,7 +408,7 @@ bool YoloV5Runner::runInferenceInternal(const cv::Mat &originalFrameBgr,
     }
 
     const auto npuStart = std::chrono::steady_clock::now();
-    ret = rknn_run(ctx_, nullptr);
+    int ret = rknn_run(ctx_, nullptr);
     if (ret < 0) {
         err = QStringLiteral("推理失败, 错误码: %1").arg(ret);
         return false;
@@ -381,8 +425,8 @@ bool YoloV5Runner::runInferenceInternal(const cv::Mat &originalFrameBgr,
         breakdown->npuUs = std::chrono::duration_cast<std::chrono::microseconds>(npuEnd - npuStart).count();
     }
 
-    const float scale_w = static_cast<float>(inputWidth_) / static_cast<float>(originalWidth);
-    const float scale_h = static_cast<float>(inputHeight_) / static_cast<float>(originalHeight);
+    const int processedWidth = originalWidth > 0 ? originalWidth : inputWidth_;
+    const int processedHeight = originalHeight > 0 ? originalHeight : inputHeight_;
 
     const auto postStart = std::chrono::steady_clock::now();
     ret = post_process(static_cast<int8_t *>(outputs[0].buf),
@@ -390,10 +434,11 @@ bool YoloV5Runner::runInferenceInternal(const cv::Mat &originalFrameBgr,
                        static_cast<int8_t *>(outputs[2].buf),
                        inputHeight_,
                        inputWidth_,
+                       processedHeight,
+                       processedWidth,
                        BOX_THRESH,
                        NMS_THRESH,
-                       scale_w,
-                       scale_h,
+                       letterbox,
                        outputZps_,
                        outputScales_,
                        group);
@@ -452,6 +497,32 @@ bool YoloV5Runner::runInferenceInternal(const cv::Mat &originalFrameBgr,
 
     rknn_outputs_release(ctx_, ioNum_.n_output, outputs.data());
     return true;
+}
+
+bool YoloV5Runner::initializeInputMemory(QString &err) {
+    Q_UNUSED(err);
+    // RK3566 性能优化：
+    // 禁用 rknn_create_mem 零拷贝分配，强制使用 rknn_inputs_set 的拷贝模式。
+    // 零拷贝模式虽然减少了 CPU 拷贝，但会导致 NPU 推理时的内存访问延迟大幅增加（+30ms）。
+    // 当前方案：RGA 预处理 -> System Memory -> CPU memcpy -> NPU Internal Memory
+    releaseInputMemory();
+    inputTensorView_ = InputTensorView{};
+    return true;
+}
+
+void YoloV5Runner::releaseInputMemory() {
+    if (inputMem_ && ctx_ != 0) {
+        rknn_destroy_mem(ctx_, inputMem_);
+    }
+    inputMem_ = nullptr;
+    inputTensorView_ = InputTensorView{};
+}
+
+std::size_t YoloV5Runner::inputBufferBytes() const {
+    if (inputWidth_ <= 0 || inputHeight_ <= 0 || inputChannel_ <= 0) {
+        return 0;
+    }
+    return static_cast<std::size_t>(inputWidth_) * static_cast<std::size_t>(inputHeight_) * static_cast<std::size_t>(inputChannel_);
 }
 
 bool YoloV5Runner::runSample(const QString &modelPath,
