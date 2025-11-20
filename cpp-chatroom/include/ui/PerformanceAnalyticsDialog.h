@@ -52,6 +52,8 @@ private:
     QLabel* m_npuStatusLabel;
     QLabel* m_gpuUtilLabel;
     QLabel* m_rgaUtilLabel;
+    QLabel* m_rgaVersionLabel;
+    QLabel* m_rgaHwLabel;
     QTableWidget* m_historyTable;
     QTimer* m_stageRefreshTimer;
     QTimer* m_resourceRefreshTimer;

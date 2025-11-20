@@ -56,6 +56,8 @@ public:
         PerformanceMetricAvailability gpuLoad;
         PerformanceMetricAvailability rgaLoad;
         QList<QPair<QString, double>> rgaCoreLoads; // Added for multi-core RGA monitoring
+        QString rgaDriverVersion;
+        QString rgaHardwareInfo;
         NpuMemoryUsage npuMemory;
         QString npuFrequency;
         QString npuPowerState;

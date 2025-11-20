@@ -488,12 +488,23 @@ void PerformanceMonitor::sampleResourceUsage() {
 
     PerformanceMetricAvailability rgaMetric;
     QList<QPair<QString, double>> rgaCoreLoads;
-    const QString rgaDebugPath = QStringLiteral("/sys/kernel/debug/rkrga/load");
+    const QString rgaDebugRoot = QStringLiteral("/sys/kernel/debug/rkrga");
+    const QString rgaLoadPath = rgaDebugRoot + QStringLiteral("/load");
     
-    if (QFileInfo::exists(rgaDebugPath)) {
+    // Read RGA Version
+    if (QByteArray versionContent; readFileContent(rgaDebugRoot + QStringLiteral("/driver_version"), &versionContent)) {
+        snapshot.rgaDriverVersion = QString::fromUtf8(versionContent).trimmed();
+    }
+
+    // Read RGA Hardware Info
+    if (QByteArray hwContent; readFileContent(rgaDebugRoot + QStringLiteral("/hardware"), &hwContent)) {
+        snapshot.rgaHardwareInfo = QString::fromUtf8(hwContent).trimmed();
+    }
+
+    if (QFileInfo::exists(rgaLoadPath)) {
         QByteArray content;
         QString errorDetail;
-        if (PerformanceMonitor::readFileContent(rgaDebugPath, &content, &errorDetail)) {
+        if (PerformanceMonitor::readFileContent(rgaLoadPath, &content, &errorDetail)) {
             rgaMetric.available = true;
             rgaMetric.detail.clear();
             
@@ -544,8 +555,7 @@ void PerformanceMonitor::sampleResourceUsage() {
             
             snapshot.rgaCoreLoads = rgaCoreLoads;
             if (schedulerCount > 0) {
-                rgaMetric.value = totalLoad / schedulerCount; // Average load? Or max? Usually average for system load.
-                // Or maybe sum? If they are parallel engines, average is better for "system RGA load".
+                rgaMetric.value = totalLoad / schedulerCount; 
             } else {
                 rgaMetric.value = 0.0;
             }

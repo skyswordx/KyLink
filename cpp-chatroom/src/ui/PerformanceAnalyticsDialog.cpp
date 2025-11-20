@@ -199,6 +199,33 @@ void PerformanceAnalyticsDialog::initializeUi() {
     resourceLayout->addWidget(new QLabel(tr("RGA 利用率:"), resourceGroup), row, 0);
     resourceLayout->addWidget(m_rgaUtilLabel, row++, 1);
 
+    // RGA Details Widget (Collapsible)
+    auto* rgaDetailsWidget = new QWidget(resourceGroup);
+    auto* rgaDetailsLayout = new QGridLayout(rgaDetailsWidget);
+    rgaDetailsLayout->setContentsMargins(0, 0, 0, 0);
+
+    m_rgaVersionLabel = new QLabel(QStringLiteral("—"), rgaDetailsWidget);
+    m_rgaHwLabel = new QLabel(QStringLiteral("—"), rgaDetailsWidget);
+    m_rgaHwLabel->setWordWrap(true);
+
+    rgaDetailsLayout->addWidget(new QLabel(tr("RGA 驱动版本:"), rgaDetailsWidget), 0, 0);
+    rgaDetailsLayout->addWidget(m_rgaVersionLabel, 0, 1);
+    rgaDetailsLayout->addWidget(new QLabel(tr("RGA 硬件信息:"), rgaDetailsWidget), 1, 0);
+    rgaDetailsLayout->addWidget(m_rgaHwLabel, 1, 1);
+
+    rgaDetailsLayout->setColumnStretch(1, 1);
+    rgaDetailsWidget->setVisible(false);
+
+    auto* toggleRgaDetailsBtn = new QPushButton(tr("显示 RGA 详细信息"), resourceGroup);
+    toggleRgaDetailsBtn->setCheckable(true);
+    connect(toggleRgaDetailsBtn, &QPushButton::toggled, [toggleRgaDetailsBtn, rgaDetailsWidget](bool checked) {
+        rgaDetailsWidget->setVisible(checked);
+        toggleRgaDetailsBtn->setText(checked ? tr("隐藏 RGA 详细信息") : tr("显示 RGA 详细信息"));
+    });
+
+    resourceLayout->addWidget(toggleRgaDetailsBtn, row++, 0, 1, 2);
+    resourceLayout->addWidget(rgaDetailsWidget, row++, 0, 1, 2);
+
     resourceLayout->setColumnStretch(1, 1);
 
     m_historyTable = new QTableWidget(this);
@@ -325,6 +352,9 @@ void PerformanceAnalyticsDialog::updateResourceSection(const PerformanceMonitor:
     } else {
         m_rgaUtilLabel->setText(formatPercent(snapshot.rgaLoad.value, snapshot.rgaLoad.available, snapshot.rgaLoad.detail));
     }
+
+    setOrDash(m_rgaVersionLabel, snapshot.rgaDriverVersion);
+    setOrDash(m_rgaHwLabel, snapshot.rgaHardwareInfo);
 }
 
 void PerformanceAnalyticsDialog::refreshHistoryTable(const QVector<PerformanceMonitor::FrameTimings>& history) {
