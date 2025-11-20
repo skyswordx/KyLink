@@ -7,6 +7,7 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QLabel>
+#include <QPushButton>
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -135,44 +136,68 @@ void PerformanceAnalyticsDialog::initializeUi() {
     m_processCpuLabel = new QLabel(QStringLiteral("—"), resourceGroup);
     m_systemCpuLabel = new QLabel(QStringLiteral("—"), resourceGroup);
     m_npuUtilLabel = new QLabel(QStringLiteral("—"), resourceGroup);
-    m_npuFreqLabel = new QLabel(QStringLiteral("—"), resourceGroup);
-    m_npuPowerLabel = new QLabel(QStringLiteral("—"), resourceGroup);
-    m_npuDelayLabel = new QLabel(QStringLiteral("—"), resourceGroup);
-    m_npuVoltLabel = new QLabel(QStringLiteral("—"), resourceGroup);
-    m_npuVersionLabel = new QLabel(QStringLiteral("—"), resourceGroup);
-    m_npuStatusLabel = new QLabel(QStringLiteral("—"), resourceGroup);
+    
+    // NPU Details Widget (Collapsible)
+    auto* npuDetailsWidget = new QWidget(resourceGroup);
+    auto* npuDetailsLayout = new QGridLayout(npuDetailsWidget);
+    npuDetailsLayout->setContentsMargins(0, 0, 0, 0);
+    
+    m_npuFreqLabel = new QLabel(QStringLiteral("—"), npuDetailsWidget);
+    m_npuPowerLabel = new QLabel(QStringLiteral("—"), npuDetailsWidget);
+    m_npuDelayLabel = new QLabel(QStringLiteral("—"), npuDetailsWidget);
+    m_npuVoltLabel = new QLabel(QStringLiteral("—"), npuDetailsWidget);
+    m_npuVersionLabel = new QLabel(QStringLiteral("—"), npuDetailsWidget);
+    m_npuStatusLabel = new QLabel(QStringLiteral("—"), npuDetailsWidget);
     m_npuStatusLabel->setWordWrap(true);
+
+    npuDetailsLayout->addWidget(new QLabel(tr("NPU 频率:"), npuDetailsWidget), 0, 0);
+    npuDetailsLayout->addWidget(m_npuFreqLabel, 0, 1);
+    npuDetailsLayout->addWidget(new QLabel(tr("NPU 电源状态:"), npuDetailsWidget), 1, 0);
+    npuDetailsLayout->addWidget(m_npuPowerLabel, 1, 1);
+    npuDetailsLayout->addWidget(new QLabel(tr("NPU Delayms:"), npuDetailsWidget), 2, 0);
+    npuDetailsLayout->addWidget(m_npuDelayLabel, 2, 1);
+    npuDetailsLayout->addWidget(new QLabel(tr("NPU 电压:"), npuDetailsWidget), 3, 0);
+    npuDetailsLayout->addWidget(m_npuVoltLabel, 3, 1);
+    npuDetailsLayout->addWidget(new QLabel(tr("NPU 驱动版本:"), npuDetailsWidget), 4, 0);
+    npuDetailsLayout->addWidget(m_npuVersionLabel, 4, 1);
+    npuDetailsLayout->addWidget(new QLabel(tr("NPU 内存:"), npuDetailsWidget), 5, 0);
+    npuDetailsLayout->addWidget(m_npuMemoryLabel, 5, 1);
+    npuDetailsLayout->addWidget(new QLabel(tr("NPU 调试信息:"), npuDetailsWidget), 6, 0);
+    npuDetailsLayout->addWidget(m_npuStatusLabel, 6, 1);
+    
+    npuDetailsLayout->setColumnStretch(1, 1);
+    npuDetailsWidget->setVisible(false); // Default hidden
+
+    auto* toggleNpuDetailsBtn = new QPushButton(tr("显示 NPU 详细信息"), resourceGroup);
+    toggleNpuDetailsBtn->setCheckable(true);
+    connect(toggleNpuDetailsBtn, &QPushButton::toggled, [toggleNpuDetailsBtn, npuDetailsWidget](bool checked) {
+        npuDetailsWidget->setVisible(checked);
+        toggleNpuDetailsBtn->setText(checked ? tr("隐藏 NPU 详细信息") : tr("显示 NPU 详细信息"));
+    });
+
     m_gpuUtilLabel = new QLabel(QStringLiteral("—"), resourceGroup);
     m_rgaUtilLabel = new QLabel(QStringLiteral("—"), resourceGroup);
+    m_rgaUtilLabel->setWordWrap(true); // Allow multi-line for multiple RGA cores
 
-    resourceLayout->addWidget(new QLabel(tr("采样时间:"), resourceGroup), 0, 0);
-    resourceLayout->addWidget(m_resourceTimestampLabel, 0, 1);
-    resourceLayout->addWidget(new QLabel(tr("进程内存:"), resourceGroup), 1, 0);
-    resourceLayout->addWidget(m_memoryLabel, 1, 1);
-    resourceLayout->addWidget(new QLabel(tr("进程 CPU:"), resourceGroup), 2, 0);
-    resourceLayout->addWidget(m_processCpuLabel, 2, 1);
-    resourceLayout->addWidget(new QLabel(tr("系统 CPU:"), resourceGroup), 3, 0);
-    resourceLayout->addWidget(m_systemCpuLabel, 3, 1);
-    resourceLayout->addWidget(new QLabel(tr("NPU 利用率:"), resourceGroup), 4, 0);
-    resourceLayout->addWidget(m_npuUtilLabel, 4, 1);
-    resourceLayout->addWidget(new QLabel(tr("NPU 频率:"), resourceGroup), 5, 0);
-    resourceLayout->addWidget(m_npuFreqLabel, 5, 1);
-    resourceLayout->addWidget(new QLabel(tr("NPU 电源状态:"), resourceGroup), 6, 0);
-    resourceLayout->addWidget(m_npuPowerLabel, 6, 1);
-    resourceLayout->addWidget(new QLabel(tr("NPU Delayms:"), resourceGroup), 7, 0);
-    resourceLayout->addWidget(m_npuDelayLabel, 7, 1);
-    resourceLayout->addWidget(new QLabel(tr("NPU 电压:"), resourceGroup), 8, 0);
-    resourceLayout->addWidget(m_npuVoltLabel, 8, 1);
-    resourceLayout->addWidget(new QLabel(tr("NPU 驱动版本:"), resourceGroup), 9, 0);
-    resourceLayout->addWidget(m_npuVersionLabel, 9, 1);
-    resourceLayout->addWidget(new QLabel(tr("NPU 内存:"), resourceGroup), 10, 0);
-    resourceLayout->addWidget(m_npuMemoryLabel, 10, 1);
-    resourceLayout->addWidget(new QLabel(tr("NPU 调试信息:"), resourceGroup), 11, 0);
-    resourceLayout->addWidget(m_npuStatusLabel, 11, 1);
-    resourceLayout->addWidget(new QLabel(tr("GPU 利用率:"), resourceGroup), 12, 0);
-    resourceLayout->addWidget(m_gpuUtilLabel, 12, 1);
-    resourceLayout->addWidget(new QLabel(tr("RGA 利用率:"), resourceGroup), 13, 0);
-    resourceLayout->addWidget(m_rgaUtilLabel, 13, 1);
+    int row = 0;
+    resourceLayout->addWidget(new QLabel(tr("采样时间:"), resourceGroup), row, 0);
+    resourceLayout->addWidget(m_resourceTimestampLabel, row++, 1);
+    resourceLayout->addWidget(new QLabel(tr("进程内存:"), resourceGroup), row, 0);
+    resourceLayout->addWidget(m_memoryLabel, row++, 1);
+    resourceLayout->addWidget(new QLabel(tr("进程 CPU:"), resourceGroup), row, 0);
+    resourceLayout->addWidget(m_processCpuLabel, row++, 1);
+    resourceLayout->addWidget(new QLabel(tr("系统 CPU:"), resourceGroup), row, 0);
+    resourceLayout->addWidget(m_systemCpuLabel, row++, 1);
+    resourceLayout->addWidget(new QLabel(tr("NPU 利用率:"), resourceGroup), row, 0);
+    resourceLayout->addWidget(m_npuUtilLabel, row++, 1);
+    
+    resourceLayout->addWidget(toggleNpuDetailsBtn, row++, 0, 1, 2);
+    resourceLayout->addWidget(npuDetailsWidget, row++, 0, 1, 2);
+
+    resourceLayout->addWidget(new QLabel(tr("GPU 利用率:"), resourceGroup), row, 0);
+    resourceLayout->addWidget(m_gpuUtilLabel, row++, 1);
+    resourceLayout->addWidget(new QLabel(tr("RGA 利用率:"), resourceGroup), row, 0);
+    resourceLayout->addWidget(m_rgaUtilLabel, row++, 1);
 
     resourceLayout->setColumnStretch(1, 1);
 
@@ -290,7 +315,16 @@ void PerformanceAnalyticsDialog::updateResourceSection(const PerformanceMonitor:
 
     setOrDash(m_npuStatusLabel, snapshot.npuStaticDetail);
     m_gpuUtilLabel->setText(formatPercent(snapshot.gpuLoad.value, snapshot.gpuLoad.available, snapshot.gpuLoad.detail));
-    m_rgaUtilLabel->setText(formatPercent(snapshot.rgaLoad.value, snapshot.rgaLoad.available, snapshot.rgaLoad.detail));
+    
+    if (!snapshot.rgaCoreLoads.isEmpty()) {
+        QStringList rgaDetails;
+        for (const auto& pair : snapshot.rgaCoreLoads) {
+            rgaDetails.append(QStringLiteral("%1: %2%").arg(pair.first, QString::number(pair.second, 'f', 1)));
+        }
+        m_rgaUtilLabel->setText(rgaDetails.join(QStringLiteral("\n")));
+    } else {
+        m_rgaUtilLabel->setText(formatPercent(snapshot.rgaLoad.value, snapshot.rgaLoad.available, snapshot.rgaLoad.detail));
+    }
 }
 
 void PerformanceAnalyticsDialog::refreshHistoryTable(const QVector<PerformanceMonitor::FrameTimings>& history) {

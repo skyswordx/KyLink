@@ -52,3 +52,53 @@ kylin@kylin:~/Desktop$ ldd FeiQChatroom
 kylin@kylin:~/Desktop$ ldd FeiQChatroom | grep "*rga*"
 kylin@kylin:~/Desktop$ sudo ./FeiQChatroom 
 ./FeiQChatroom: symbol lookup error: ./FeiQChatroom: undefined symbol: _Z6imcopy12rga_buffer_tS_iPi
+
+
+kylin@kylin:~/Desktop$ sudo ls /sys/kernel/debug/rkrga
+debug		dump_image  hardware  mm_session       scheduler_status
+driver_version	dump_path   load      request_manager
+kylin@kylin:~/Desktop$ sudo cat /sys/kernel/debug/rkrga/load
+num of scheduler = 1
+================= load ==================
+scheduler[0]: rga2
+	 load = 0%
+-----------------------------------
+	 process 1: pid = 1568, name: ./FeiQChatroom
+kylin@kylin:~/Desktop$ sudo cat /sys/kernel/debug/rkrga/load
+num of scheduler = 1
+================= load ==================
+scheduler[0]: rga2
+	 load = 0%
+-----------------------------------
+	 process 1: pid = 1568, name: ./FeiQChatroom
+kylin@kylin:~/Desktop$ sudo cat /sys/kernel/debug/rkrga/debug
+REG [DIS]
+MSG [DIS]
+TIME [DIS]
+INT [DIS]
+MM [DIS]
+CHECK [DIS]
+STOP [DIS]
+
+help:
+ 'echo reg > debug' to enable/disable register log printing.
+ 'echo msg > debug' to enable/disable message log printing.
+ 'echo time > debug' to enable/disable time log printing.
+ 'echo int > debug' to enable/disable interruppt log printing.
+ 'echo mm > debug' to enable/disable memory manager log printing.
+ 'echo check > debug' to enable/disable check mode.
+ 'echo stop > debug' to enable/disable stop using hardware
+kylin@kylin:~/Desktop$ sudo cat /sys/kernel/debug/rkrga/scheduler_status
+num of scheduler = 1
+===================================
+scheduler[0]: rga2
+-----------------------------------
+pd_ref = 0
+kylin@kylin:~/Desktop$ sudo cat /sys/kernel/debug/rkrga/scheduler_status
+num of scheduler = 1
+===================================
+scheduler[0]: rga2
+-----------------------------------
+pd_ref = 0
+kylin@kylin:~/Desktop$ 
+

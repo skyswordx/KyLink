@@ -487,9 +487,75 @@ void PerformanceMonitor::sampleResourceUsage() {
                          tr("GPU 驱动未提供占用率数据或驱动未加载"));
 
     PerformanceMetricAvailability rgaMetric;
-    if (QFileInfo::exists(QStringLiteral("/dev/rga"))) {
+    QList<QPair<QString, double>> rgaCoreLoads;
+    const QString rgaDebugPath = QStringLiteral("/sys/kernel/debug/rkrga/load");
+    
+    if (QFileInfo::exists(rgaDebugPath)) {
+        QByteArray content;
+        QString errorDetail;
+        if (PerformanceMonitor::readFileContent(rgaDebugPath, &content, &errorDetail)) {
+            rgaMetric.available = true;
+            rgaMetric.detail.clear();
+            
+            // Parse the content
+            // Example format:
+            // num of scheduler = 1
+            // ================= load ==================
+            // scheduler[0]: rga2
+            //      load = 0%
+            
+            QString contentStr = QString::fromUtf8(content);
+            QStringList lines = contentStr.split('\n');
+            
+            double totalLoad = 0.0;
+            int schedulerCount = 0;
+            
+            QString currentSchedulerName;
+            
+            for (const QString& line : lines) {
+                QString trimmed = line.trimmed();
+                if (trimmed.startsWith("scheduler[")) {
+                    // Extract name, e.g., "scheduler[0]: rga2" -> "rga2" or keep full name
+                    int colonIndex = trimmed.indexOf(':');
+                    if (colonIndex != -1) {
+                        currentSchedulerName = trimmed.mid(colonIndex + 1).trimmed();
+                        if (currentSchedulerName.isEmpty()) {
+                            currentSchedulerName = trimmed.left(colonIndex).trimmed();
+                        }
+                    } else {
+                        currentSchedulerName = trimmed;
+                    }
+                } else if (trimmed.startsWith("load =")) {
+                    // Extract load, e.g., "load = 0%"
+                    QString valStr = trimmed.mid(6).trimmed(); // Skip "load ="
+                    if (valStr.endsWith('%')) {
+                        valStr.chop(1);
+                    }
+                    bool ok = false;
+                    double load = valStr.toDouble(&ok);
+                    if (ok && !currentSchedulerName.isEmpty()) {
+                        rgaCoreLoads.append({currentSchedulerName, load});
+                        totalLoad += load;
+                        schedulerCount++;
+                        currentSchedulerName.clear();
+                    }
+                }
+            }
+            
+            snapshot.rgaCoreLoads = rgaCoreLoads;
+            if (schedulerCount > 0) {
+                rgaMetric.value = totalLoad / schedulerCount; // Average load? Or max? Usually average for system load.
+                // Or maybe sum? If they are parallel engines, average is better for "system RGA load".
+            } else {
+                rgaMetric.value = 0.0;
+            }
+        } else {
+            rgaMetric.available = false;
+            rgaMetric.detail = errorDetail;
+        }
+    } else if (QFileInfo::exists(QStringLiteral("/dev/rga"))) {
         rgaMetric.available = false;
-        rgaMetric.detail = QStringLiteral("驱动未公开 RGA 占用率接口");
+        rgaMetric.detail = QStringLiteral("驱动未公开 RGA 占用率接口 (/sys/kernel/debug/rkrga/load 不存在)");
     } else {
         rgaMetric.available = false;
         rgaMetric.detail = QStringLiteral("未检测到 /dev/rga 设备节点");

@@ -55,6 +55,7 @@ public:
         PerformanceMetricAvailability npuLoad;
         PerformanceMetricAvailability gpuLoad;
         PerformanceMetricAvailability rgaLoad;
+        QList<QPair<QString, double>> rgaCoreLoads; // Added for multi-core RGA monitoring
         NpuMemoryUsage npuMemory;
         QString npuFrequency;
         QString npuPowerState;
