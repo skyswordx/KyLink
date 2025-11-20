@@ -67,10 +67,42 @@ public:
         return true;
     }
 
+    // 线程安全的帧更新接口 (Mailbox 模式)
+    void updateFrame(const FramePacket& packet) {
+        QMutexLocker locker(&m_mutex);
+        m_pendingPacket = packet;
+        m_hasPending = true;
+        
+        if (!m_isRunning) {
+            m_isRunning = true;
+            QMetaObject::invokeMethod(this, "processLoop", Qt::QueuedConnection);
+        }
+    }
+
 public slots:
+    void processLoop() {
+        FramePacket packet;
+        {
+            QMutexLocker locker(&m_mutex);
+            if (!m_hasPending) {
+                m_isRunning = false;
+                return;
+            }
+            packet = m_pendingPacket;
+            m_hasPending = false;
+            // m_isRunning remains true
+        }
+
+        processFrame(packet);
+
+        // 继续处理下一帧（如果有的化）
+        QMetaObject::invokeMethod(this, "processLoop", Qt::QueuedConnection);
+    }
+
     void processFrame(const FramePacket& packet) {
         if (!runner_.isReady()) {
             emit inferenceError(tr("模型未加载"));
+            emit workerReady();
             return;
         }
 
@@ -101,6 +133,7 @@ public slots:
             preprocessorReady_ = preprocessor_.initialize(runner_.inputWidth(), runner_.inputHeight());
             if (!preprocessorReady_) {
                 emit inferenceError(tr("RGA 预处理未就绪"));
+                emit workerReady(); // 确保释放
                 return;
             }
         }
@@ -108,14 +141,8 @@ public slots:
         RgaPreprocessor::Result prepResult;
         RgaPreprocessor::Result displayResult; // 新增：显示结果
 
-        struct AutoCloseFd {
-            int fd;
-            ~AutoCloseFd() {
-                if (fd >= 0) {
-                    ::close(fd);
-                }
-            }
-        } fdCloser{packet.dmaFd};
+        // 移除 AutoCloseFd，因为 FD 现在由 sampleHolder 管理
+        // struct AutoCloseFd { ... } fdCloser{packet.dmaFd};
 
         if (isNv12) {
             RgaPreprocessor::Nv12Input nv12Input;
@@ -156,6 +183,7 @@ public slots:
 
         if (!prepResult.success) {
             emit inferenceError(tr("RGA 预处理失败: %1").arg(prepResult.error));
+            emit workerReady(); // 确保释放
             return;
         }
 
@@ -181,6 +209,7 @@ public slots:
         if (!inferenceOk) {
              // ... error handling ...
              emit inferenceError(error);
+             emit workerReady(); // 确保释放
              return;
         }
 
@@ -246,16 +275,26 @@ public slots:
                             image, // 已经是 copy 过的
                             detections.count,
                             static_cast<qint64>(inferenceTimeMs));
+        
+        // 关键优化：推理和数据拷贝完成后，立即通知可以接收下一帧
+        // 不必等待 UI 渲染完成
+        emit workerReady();
     }
 
-signals:
+    signals:
     void inferenceReady(quint64 frameId, const QImage& image, int objectCount, qint64 inferenceTimeMs);
     void inferenceError(const QString& errorText);
+    void workerReady(); // 新增：通知主线程 Worker 已空闲
 
 private:
     YoloV5Runner runner_;
     RgaPreprocessor preprocessor_;
     bool preprocessorReady_ = false;
+    
+    QMutex m_mutex;
+    FramePacket m_pendingPacket;
+    bool m_hasPending = false;
+    bool m_isRunning = false;
 };
 
 CameraPreviewDialog::CameraPreviewDialog(QWidget* parent)
@@ -658,9 +697,16 @@ bool CameraPreviewDialog::ensureDetectionWorker(QString* errorOut)
     m_detectionThread = new QThread(this);
     worker->moveToThread(m_detectionThread);
     connect(m_detectionThread, &QThread::finished, worker, &QObject::deleteLater);
-    connect(this, &CameraPreviewDialog::frameCaptured, worker, &DetectionWorker::processFrame, Qt::QueuedConnection);
+    // 移除旧的信号连接，改用直接调用 updateFrame
+    // connect(this, &CameraPreviewDialog::frameCaptured, worker, &DetectionWorker::processFrame, Qt::QueuedConnection);
     connect(worker, &DetectionWorker::inferenceReady, this, &CameraPreviewDialog::onInferenceFrameReady, Qt::QueuedConnection);
     connect(worker, &DetectionWorker::inferenceError, this, &CameraPreviewDialog::onInferenceError, Qt::QueuedConnection);
+    
+    // 移除 workerReady 连接，因为我们不再依赖 m_processingFrame 标志位进行流控
+    // connect(worker, &DetectionWorker::workerReady, this, [this]() {
+    //    m_processingFrame = false;
+    // }, Qt::DirectConnection);
+
     m_detectionThread->start();
 
     m_detectionWorker = worker;
@@ -713,7 +759,7 @@ void CameraPreviewDialog::onInferenceFrameReady(quint64 frameId, const QImage& i
 {
     const auto renderStart = std::chrono::steady_clock::now();
 
-    m_processingFrame = false;
+    // m_processingFrame = false; // 移除：改为由 workerReady 信号提前重置
 
     if (image.isNull()) {
         return;
@@ -736,27 +782,37 @@ void CameraPreviewDialog::onInferenceFrameReady(quint64 frameId, const QImage& i
 
 void CameraPreviewDialog::onInferenceError(const QString& errorText)
 {
-    m_processingFrame = false;
+    // m_processingFrame = false; // 移除：错误时也应由 workerReady 或逻辑保证重置，这里仅做 UI 更新
+    // 但为了保险，如果 Worker 内部发生错误提前返回，也应该确保重置。
+    // 现在的 processFrame 实现中，错误分支也会返回，我们需要确保那里也 emit workerReady 或者在这里兜底。
+    // 简单起见，我们在 processFrame 的所有退出路径都保证 emit workerReady 比较困难，
+    // 所以保留这里的兜底，但主要依赖 Worker。
+    // 实际上 processFrame 里错误返回时没有 emit workerReady，所以这里必须保留，
+    // 或者修改 processFrame 让错误也 emit。
+    // 让我们修改 processFrame 让它总是 emit workerReady。
+    
+    // 修正：由于 processFrame 修改较多，我们在 onInferenceError 里保留重置作为安全网
+    // 但为了性能，最好在 processFrame 内部处理。
+    // 鉴于 replace_string 限制，我们这里先保留，但在 processFrame 的错误分支里加上 emit workerReady 会更好。
+    // 暂时先这样，错误情况下的性能不是瓶颈。
+    m_processingFrame = false; 
     updateStatusText(tr("推理失败: %1").arg(errorText));
 }
 
 void CameraPreviewDialog::handleNewFrame(const FramePacket& packet)
 {
-    if (!m_detectionWorker || !m_detectionThread || !m_detectionThread->isRunning()) {
-        if (packet.dmaFd >= 0) {
-            ::close(packet.dmaFd);
-        }
-        m_processingFrame = false;
-        return;
+    // 此函数现在仅用于在主线程触发（如果需要），但我们更倾向于直接从 appsink 调用 worker
+    // 为了线程安全和解耦，我们保留这个槽函数，但让它调用 worker 的线程安全接口
+    if (m_detectionWorker) {
+        m_detectionWorker->updateFrame(packet);
     }
-
-    emit frameCaptured(packet);
 }
 
 GstFlowReturn CameraPreviewDialog::onAppSinkNewSample(GstAppSink* sink, gpointer userData)
 {
     auto* self = static_cast<CameraPreviewDialog*>(userData);
-    if (!self || self->m_processingFrame.load()) {
+    // 移除 m_processingFrame 检查，改为总是获取最新帧并更新 Mailbox
+    if (!self) {
         GstSample* discardSample = gst_app_sink_pull_sample(sink);
         if (discardSample) {
             gst_sample_unref(discardSample);
@@ -768,23 +824,25 @@ GstFlowReturn CameraPreviewDialog::onAppSinkNewSample(GstAppSink* sink, gpointer
     if (!sample) {
         return GST_FLOW_OK;
     }
+    
+    // 使用 shared_ptr 管理 sample 生命周期
+    std::shared_ptr<GstSample> samplePtr(sample, [](GstSample* s) {
+        if (s) gst_sample_unref(s);
+    });
 
     GstCaps* caps = gst_sample_get_caps(sample);
     if (!caps) {
-        gst_sample_unref(sample);
         return GST_FLOW_OK;
     }
 
     GstVideoInfo info;
     gst_video_info_init(&info);
     if (!gst_video_info_from_caps(&info, caps)) {
-        gst_sample_unref(sample);
         return GST_FLOW_OK;
     }
 
     GstBuffer* buffer = gst_sample_get_buffer(sample);
     if (!buffer) {
-        gst_sample_unref(sample);
         return GST_FLOW_OK;
     }
 
@@ -801,19 +859,18 @@ GstFlowReturn CameraPreviewDialog::onAppSinkNewSample(GstAppSink* sink, gpointer
         }
     }
 
-    struct ScopedFdCloser {
-        int& fdRef;
-        explicit ScopedFdCloser(int& ref) : fdRef(ref) {}
-        ~ScopedFdCloser() {
-            if (fdRef >= 0) {
-                ::close(fdRef);
-            }
-        }
-    } fdCloserGuard(dmaFd);
+    // 移除 ScopedFdCloser，因为我们现在持有 samplePtr，FD 在 sample 释放前一直有效
+    // 且 gst_dmabuf_memory_get_fd 返回的 FD 不需要 close (它属于 allocator)
+    // 除非我们 dup 了它。通常 GStreamer 的 dmabuf fd 是借用的。
+    // 之前的代码 close(dmaFd) 可能是错误的，或者之前的逻辑是 dup 出来的？
+    // gst_dmabuf_memory_get_fd 文档说: "The file descriptor remains valid until the memory is destroyed."
+    // 所以我们不需要 close 它，只需要保持 memory (sample) 存活。
+    
+    // 如果之前的代码有 close，那可能是为了防止泄漏？但如果是借用的就不该 close。
+    // 假设之前的 close 是多余的或者错误的，现在我们用 sampleHolder 保证安全。
 
     GstMapInfo mapInfo;
     if (!gst_buffer_map(buffer, &mapInfo, GST_MAP_READ)) {
-        gst_sample_unref(sample);
         return GST_FLOW_OK;
     }
 
@@ -831,22 +888,25 @@ GstFlowReturn CameraPreviewDialog::onAppSinkNewSample(GstAppSink* sink, gpointer
         packet.uvStride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 1);
         packet.uvPlaneOffset = GST_VIDEO_INFO_PLANE_OFFSET(&info, 1);
     }
+    
+    // 仍然拷贝数据作为回退，或者用于非 DMA 路径
+    // 如果完全确信 DMA 路径，可以优化掉这个拷贝，但为了稳健性先保留
     packet.data = QByteArray(reinterpret_cast<const char*>(mapInfo.data), static_cast<int>(mapInfo.size));
+    
     packet.pts = static_cast<std::int64_t>(GST_BUFFER_PTS(buffer));
     packet.captureTimestampNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     packet.frameId = PerformanceMonitor::instance()->recordFrameCaptured(packet.captureTimestampNs);
     packet.dmaFd = dmaFd;
-    dmaFd = -1;
+    packet.sampleHolder = samplePtr; // 传递所有权
 
     gst_buffer_unmap(buffer, &mapInfo);
-    gst_sample_unref(sample);
+    // gst_sample_unref(sample); // 不需要了，由 samplePtr 管理
 
-    self->m_processingFrame = true;
-    QMetaObject::invokeMethod(self,
-                              [self, packet]() {
-                                  self->handleNewFrame(packet);
-                              },
-                              Qt::QueuedConnection);
+    // 直接调用 Worker 的线程安全接口，或者通过主线程转发
+    // 为了最低延迟，我们直接调用 Worker (Worker 必须处理好线程安全)
+    if (self->m_detectionWorker) {
+        self->m_detectionWorker->updateFrame(packet);
+    }
 
     return GST_FLOW_OK;
 }

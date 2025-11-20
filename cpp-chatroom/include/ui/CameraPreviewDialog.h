@@ -11,6 +11,7 @@
 #include <gst/video/video.h>
 #include <atomic>
 #include <cstdint>
+#include <memory> // for std::shared_ptr
 #include <vector>
 
 typedef struct _GstElement GstElement;
@@ -40,6 +41,9 @@ struct FramePacket {
     int uvStride = 0;
     int yPlaneOffset = 0;
     int uvPlaneOffset = 0;
+
+    // 持有 GstSample 的引用，确保 dmaFd 在处理期间有效
+    std::shared_ptr<void> sampleHolder;
 };
 
 Q_DECLARE_METATYPE(FramePacket)
