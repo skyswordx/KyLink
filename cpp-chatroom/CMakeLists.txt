@@ -66,6 +66,7 @@ set(SOURCES
     src/backend/RgaSelfTest.cpp
     src/backend/PerformanceMonitor.cpp
     src/npu/YoloV5Runner.cpp
+    src/npu/RgaPreprocessor.cpp
     src/npu/postprocess.cpp
     src/ui/AboutDialog.cpp
     src/ui/ChatWindow.cpp
@@ -83,6 +84,7 @@ set(HEADERS
     include/backend/PerformanceMonitor.h
     include/domain/FeiqTypes.h
     include/npu/YoloV5Runner.h
+    include/npu/RgaPreprocessor.h
     include/npu/postprocess.h
     include/ui/AboutDialog.h
     include/ui/ChatWindow.h

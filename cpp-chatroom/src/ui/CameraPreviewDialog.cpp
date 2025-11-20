@@ -1,12 +1,14 @@
 #include "ui/CameraPreviewDialog.h"
 
 #include "backend/PerformanceMonitor.h"
+#include "npu/RgaPreprocessor.h"
 #include "npu/YoloV5Runner.h"
 
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
+#include <QDebug>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMetaType>
@@ -44,7 +46,18 @@ public:
         : QObject(parent) {}
 
     bool loadModel(const QString& modelPath, QString* errorOut) {
-        return runner_.loadModel(modelPath, errorOut);
+        QString error;
+        if (!runner_.loadModel(modelPath, errorOut ? errorOut : &error)) {
+            return false;
+        }
+        preprocessorReady_ = preprocessor_.initialize(runner_.inputWidth(), runner_.inputHeight());
+        if (!preprocessorReady_) {
+            if (errorOut) {
+                *errorOut = tr("初始化 RGA 预处理失败");
+            }
+            return false;
+        }
+        return true;
     }
 
 public slots:
@@ -72,14 +85,44 @@ public slots:
             captureToPreprocessUs = (preprocessStartNs - packet.captureTimestampNs) / 1000;
         }
 
+        if (!preprocessorReady_) {
+            preprocessorReady_ = preprocessor_.initialize(runner_.inputWidth(), runner_.inputHeight());
+            if (!preprocessorReady_) {
+                emit inferenceError(tr("RGA 预处理未就绪"));
+                return;
+            }
+        }
+
+        const auto prepResult = preprocessor_.processBgr(frame);
+        if (!prepResult.success) {
+            emit inferenceError(tr("RGA 预处理失败: %1").arg(prepResult.error));
+            return;
+        }
+
         DetectResultGroup detections{};
         std::int64_t inferenceTimeMs = 0;
         cv::Mat visualized;
         QString error;
         YoloV5Runner::InferenceBreakdown breakdown;
-        if (!runner_.infer(frame, &detections, &inferenceTimeMs, &visualized, &error, &breakdown)) {
-            emit inferenceError(error);
-            return;
+        breakdown.preprocessUs = prepResult.durationUs;
+
+        bool inferenceOk = runner_.inferFromRgbBuffer(frame,
+                                                      frame.cols,
+                                                      frame.rows,
+                                                      prepResult.data,
+                                                      prepResult.stride,
+                                                      &detections,
+                                                      &inferenceTimeMs,
+                                                      &visualized,
+                                                      &error,
+                                                      &breakdown);
+        if (!inferenceOk) {
+            qWarning() << "RGA 预处理推理失败，回退 CPU 路径:" << error;
+            breakdown = YoloV5Runner::InferenceBreakdown{};
+            if (!runner_.infer(frame, &detections, &inferenceTimeMs, &visualized, &error, &breakdown)) {
+                emit inferenceError(error);
+                return;
+            }
         }
 
         const auto detectionComplete = std::chrono::steady_clock::now();
@@ -111,6 +154,8 @@ signals:
 
 private:
     YoloV5Runner runner_;
+    RgaPreprocessor preprocessor_;
+    bool preprocessorReady_ = false;
 };
 
 CameraPreviewDialog::CameraPreviewDialog(QWidget* parent)

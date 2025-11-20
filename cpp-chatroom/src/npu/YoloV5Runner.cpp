@@ -256,6 +256,92 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
     cv::cvtColor(frameBgr, rgb_img, cv::COLOR_BGR2RGB);
 
     cv::Mat resized_img;
+    const cv::Mat *inputMat = &rgb_img;
+    if (frameBgr.cols != inputWidth_ || frameBgr.rows != inputHeight_) {
+        cv::resize(rgb_img, resized_img, cv::Size(inputWidth_, inputHeight_));
+        inputMat = &resized_img;
+    }
+
+    const auto preprocessEnd = std::chrono::steady_clock::now();
+    breakdown->preprocessUs = std::chrono::duration_cast<std::chrono::microseconds>(preprocessEnd - preprocessStart).count();
+
+    return runInferenceInternal(frameBgr,
+                                frameBgr.cols,
+                                frameBgr.rows,
+                                inputMat->data,
+                                err,
+                                group,
+                                inferenceTimeMs,
+                                visualizedFrame,
+                                breakdown);
+}
+
+bool YoloV5Runner::inferFromRgbBuffer(const cv::Mat &originalFrameBgr,
+                                      int originalWidth,
+                                      int originalHeight,
+                                      const uint8_t *rgbData,
+                                      int rgbStride,
+                                      DetectResultGroup *resultOut,
+                                      std::int64_t *inferenceTimeMs,
+                                      cv::Mat *visualizedFrame,
+                                      QString *errorOut,
+                                      InferenceBreakdown *breakdownOut) {
+    QString dummyError;
+    QString &err = errorOut ? *errorOut : dummyError;
+    err.clear();
+
+    if (!ready_) {
+        err = QStringLiteral("模型尚未加载");
+        return false;
+    }
+    if (!rgbData) {
+        err = QStringLiteral("输入数据为空");
+        return false;
+    }
+    if (rgbStride != inputWidth_ * inputChannel_) {
+        err = QStringLiteral("RGB stride 非预期: %1").arg(rgbStride);
+        return false;
+    }
+
+    DetectResultGroup localGroup;
+    DetectResultGroup *group = resultOut ? resultOut : &localGroup;
+    *group = DetectResultGroup{};
+
+    InferenceBreakdown dummyBreakdown;
+    InferenceBreakdown *breakdown = breakdownOut ? breakdownOut : &dummyBreakdown;
+
+    const int width = originalWidth > 0 ? originalWidth : originalFrameBgr.cols;
+    const int height = originalHeight > 0 ? originalHeight : originalFrameBgr.rows;
+    if (width <= 0 || height <= 0) {
+        err = QStringLiteral("原始分辨率非法");
+        return false;
+    }
+
+    return runInferenceInternal(originalFrameBgr,
+                                width,
+                                height,
+                                rgbData,
+                                err,
+                                group,
+                                inferenceTimeMs,
+                                visualizedFrame,
+                                breakdown);
+}
+
+bool YoloV5Runner::runInferenceInternal(const cv::Mat &originalFrameBgr,
+                                        int originalWidth,
+                                        int originalHeight,
+                                        const uint8_t *inputBuffer,
+                                        QString &err,
+                                        DetectResultGroup *group,
+                                        std::int64_t *inferenceTimeMs,
+                                        cv::Mat *visualizedFrame,
+                                        InferenceBreakdown *breakdown) {
+    if (!inputBuffer) {
+        err = QStringLiteral("输入缓冲区为空");
+        return false;
+    }
+
     rknn_input inputs[1];
     std::memset(inputs, 0, sizeof(inputs));
     inputs[0].index = 0;
@@ -263,22 +349,13 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
     inputs[0].size = inputWidth_ * inputHeight_ * inputChannel_;
     inputs[0].fmt = RKNN_TENSOR_NHWC;
     inputs[0].pass_through = 0;
-
-    if (frameBgr.cols != inputWidth_ || frameBgr.rows != inputHeight_) {
-        cv::resize(rgb_img, resized_img, cv::Size(inputWidth_, inputHeight_));
-        inputs[0].buf = resized_img.data;
-    } else {
-        inputs[0].buf = rgb_img.data;
-    }
+    inputs[0].buf = const_cast<uint8_t *>(inputBuffer);
 
     int ret = rknn_inputs_set(ctx_, ioNum_.n_input, inputs);
     if (ret < 0) {
         err = QStringLiteral("设置输入失败, 错误码: %1").arg(ret);
         return false;
     }
-
-    const auto preprocessEnd = std::chrono::steady_clock::now();
-    breakdown->preprocessUs = std::chrono::duration_cast<std::chrono::microseconds>(preprocessEnd - preprocessStart).count();
 
     std::vector<rknn_output> outputs(ioNum_.n_output);
     for (uint32_t i = 0; i < ioNum_.n_output; ++i) {
@@ -300,10 +377,12 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
     }
 
     const auto npuEnd = std::chrono::steady_clock::now();
-    breakdown->npuUs = std::chrono::duration_cast<std::chrono::microseconds>(npuEnd - npuStart).count();
+    if (breakdown) {
+        breakdown->npuUs = std::chrono::duration_cast<std::chrono::microseconds>(npuEnd - npuStart).count();
+    }
 
-    const float scale_w = static_cast<float>(inputWidth_) / static_cast<float>(frameBgr.cols);
-    const float scale_h = static_cast<float>(inputHeight_) / static_cast<float>(frameBgr.rows);
+    const float scale_w = static_cast<float>(inputWidth_) / static_cast<float>(originalWidth);
+    const float scale_h = static_cast<float>(inputHeight_) / static_cast<float>(originalHeight);
 
     const auto postStart = std::chrono::steady_clock::now();
     ret = post_process(static_cast<int8_t *>(outputs[0].buf),
@@ -325,15 +404,21 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
     }
 
     const auto postEnd = std::chrono::steady_clock::now();
-    breakdown->postprocessUs = std::chrono::duration_cast<std::chrono::microseconds>(postEnd - postStart).count();
+    if (breakdown) {
+        breakdown->postprocessUs = std::chrono::duration_cast<std::chrono::microseconds>(postEnd - postStart).count();
+    }
 
-    if (inferenceTimeMs) {
+    if (inferenceTimeMs && breakdown) {
         const qint64 combinedUs = std::max<qint64>(0, breakdown->npuUs) + std::max<qint64>(0, breakdown->postprocessUs);
         *inferenceTimeMs = combinedUs / 1000;
     }
 
     if (visualizedFrame) {
-        frameBgr.copyTo(*visualizedFrame);
+        if (!originalFrameBgr.empty()) {
+            originalFrameBgr.copyTo(*visualizedFrame);
+        } else {
+            *visualizedFrame = cv::Mat(originalHeight, originalWidth, CV_8UC3);
+        }
         for (int i = 0; i < group->count; ++i) {
             const DetectResult &det = group->results[i];
             cv::rectangle(*visualizedFrame,

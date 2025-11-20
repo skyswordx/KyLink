@@ -38,6 +38,17 @@ public:
                QString *errorOut,
                InferenceBreakdown *breakdownOut = nullptr);
 
+    bool inferFromRgbBuffer(const cv::Mat &originalFrameBgr,
+                            int originalWidth,
+                            int originalHeight,
+                            const uint8_t *rgbData,
+                            int rgbStride,
+                            DetectResultGroup *resultOut,
+                            std::int64_t *inferenceTimeMs,
+                            cv::Mat *visualizedFrame,
+                            QString *errorOut,
+                            InferenceBreakdown *breakdownOut = nullptr);
+
     static bool runSample(const QString &modelPath,
                           const QString &inputImagePath,
                           const QString &outputImagePath,
@@ -45,6 +56,15 @@ public:
 
 private:
     void release();
+    bool runInferenceInternal(const cv::Mat &originalFrameBgr,
+                              int originalWidth,
+                              int originalHeight,
+                              const uint8_t *inputBuffer,
+                              QString &err,
+                              DetectResultGroup *group,
+                              std::int64_t *inferenceTimeMs,
+                              cv::Mat *visualizedFrame,
+                              InferenceBreakdown *breakdown);
 
     rknn_context ctx_;
     bool ready_;
