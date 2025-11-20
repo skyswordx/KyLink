@@ -25,10 +25,13 @@
 #include <mutex>
 
 #include <gst/app/gstappsink.h>
+#include <gst/allocators/gstdmabuf.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
 #include <opencv2/core/mat.hpp>
 #include <opencv2/imgproc.hpp>
+
+#include <unistd.h>
 
 namespace {
 
@@ -72,11 +75,30 @@ public slots:
             return;
         }
 
-        cv::Mat frame(packet.height,
-                      packet.width,
-                      CV_8UC3,
-                      const_cast<char*>(packet.data.constData()),
-                      packet.stride);
+        const bool isNv12 = (packet.videoFormat == GST_VIDEO_FORMAT_NV12);
+        cv::Mat frameBgr;
+        if (isNv12) {
+            const int yStride = packet.yStride > 0 ? packet.yStride : packet.width;
+            const int uvStride = packet.uvStride > 0 ? packet.uvStride : packet.width;
+            cv::Mat yPlane(packet.height,
+                           packet.width,
+                           CV_8UC1,
+                           const_cast<char*>(packet.data.constData() + packet.yPlaneOffset),
+                           yStride);
+            cv::Mat uvPlane(packet.height / 2,
+                            packet.width / 2,
+                            CV_8UC2,
+                            const_cast<char*>(packet.data.constData() + packet.uvPlaneOffset),
+                            uvStride);
+            frameBgr.create(packet.height, packet.width, CV_8UC3);
+            cv::cvtColorTwoPlane(yPlane, uvPlane, frameBgr, cv::COLOR_YUV2BGR_NV12);
+        } else {
+            frameBgr = cv::Mat(packet.height,
+                               packet.width,
+                               CV_8UC3,
+                               const_cast<char*>(packet.data.constData()),
+                               packet.stride).clone();
+        }
 
         const auto preprocessStart = std::chrono::steady_clock::now();
         qint64 captureToPreprocessUs = -1;
@@ -93,7 +115,30 @@ public slots:
             }
         }
 
-        const auto prepResult = preprocessor_.processBgr(frame);
+        RgaPreprocessor::Result prepResult;
+        struct AutoCloseFd {
+            int fd;
+            ~AutoCloseFd() {
+                if (fd >= 0) {
+                    ::close(fd);
+                }
+            }
+        } fdCloser{packet.dmaFd};
+
+        if (isNv12) {
+            RgaPreprocessor::Nv12Input nv12Input;
+            nv12Input.data = reinterpret_cast<const uint8_t*>(packet.data.constData());
+            nv12Input.width = packet.width;
+            nv12Input.height = packet.height;
+            nv12Input.yStride = packet.yStride;
+            nv12Input.uvStride = packet.uvStride;
+            nv12Input.yPlaneOffset = packet.yPlaneOffset;
+            nv12Input.uvPlaneOffset = packet.uvPlaneOffset;
+            nv12Input.dmaFd = packet.dmaFd;
+            prepResult = preprocessor_.processNv12(nv12Input);
+        } else {
+            prepResult = preprocessor_.processBgr(frameBgr);
+        }
         if (!prepResult.success) {
             emit inferenceError(tr("RGA 预处理失败: %1").arg(prepResult.error));
             return;
@@ -106,9 +151,9 @@ public slots:
         YoloV5Runner::InferenceBreakdown breakdown;
         breakdown.preprocessUs = prepResult.durationUs;
 
-        bool inferenceOk = runner_.inferFromRgbBuffer(frame,
-                                                      frame.cols,
-                                                      frame.rows,
+        bool inferenceOk = runner_.inferFromRgbBuffer(frameBgr,
+                                                      frameBgr.cols,
+                                                      frameBgr.rows,
                                                       prepResult.data,
                                                       prepResult.stride,
                                                       &detections,
@@ -119,7 +164,7 @@ public slots:
         if (!inferenceOk) {
             qWarning() << "RGA 预处理推理失败，回退 CPU 路径:" << error;
             breakdown = YoloV5Runner::InferenceBreakdown{};
-            if (!runner_.infer(frame, &detections, &inferenceTimeMs, &visualized, &error, &breakdown)) {
+            if (!runner_.infer(frameBgr, &detections, &inferenceTimeMs, &visualized, &error, &breakdown)) {
                 emit inferenceError(error);
                 return;
             }
@@ -430,7 +475,7 @@ void CameraPreviewDialog::startPipelineForIndex(int index)
     }
 
     g_object_set(queue, "leaky", kQueueLeakyDownstream, nullptr); // drop stale frames when UI lags
-    GstCaps* caps = gst_caps_from_string("video/x-raw,format=BGR");
+    GstCaps* caps = gst_caps_from_string("video/x-raw,format=NV12");
     g_object_set(capsfilter, "caps", caps, nullptr);
     gst_caps_unref(caps);
 
@@ -641,6 +686,9 @@ void CameraPreviewDialog::onInferenceError(const QString& errorText)
 void CameraPreviewDialog::handleNewFrame(const FramePacket& packet)
 {
     if (!m_detectionWorker || !m_detectionThread || !m_detectionThread->isRunning()) {
+        if (packet.dmaFd >= 0) {
+            ::close(packet.dmaFd);
+        }
         m_processingFrame = false;
         return;
     }
@@ -683,6 +731,29 @@ GstFlowReturn CameraPreviewDialog::onAppSinkNewSample(GstAppSink* sink, gpointer
         return GST_FLOW_OK;
     }
 
+    int dmaFd = -1;
+    const guint memoryCount = gst_buffer_n_memory(buffer);
+    for (guint i = 0; i < memoryCount; ++i) {
+        GstMemory* mem = gst_buffer_peek_memory(buffer, i);
+        if (mem && gst_is_dmabuf_memory(mem)) {
+            int fd = gst_dmabuf_memory_get_fd(mem);
+            if (fd >= 0) {
+                dmaFd = fd;
+                break;
+            }
+        }
+    }
+
+    struct ScopedFdCloser {
+        int& fdRef;
+        explicit ScopedFdCloser(int& ref) : fdRef(ref) {}
+        ~ScopedFdCloser() {
+            if (fdRef >= 0) {
+                ::close(fdRef);
+            }
+        }
+    } fdCloserGuard(dmaFd);
+
     GstMapInfo mapInfo;
     if (!gst_buffer_map(buffer, &mapInfo, GST_MAP_READ)) {
         gst_sample_unref(sample);
@@ -692,11 +763,23 @@ GstFlowReturn CameraPreviewDialog::onAppSinkNewSample(GstAppSink* sink, gpointer
     FramePacket packet;
     packet.width = GST_VIDEO_INFO_WIDTH(&info);
     packet.height = GST_VIDEO_INFO_HEIGHT(&info);
+    packet.videoFormat = GST_VIDEO_INFO_FORMAT(&info);
     packet.stride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 0);
+    const guint planeCount = GST_VIDEO_INFO_N_PLANES(&info);
+    if (planeCount > 0) {
+        packet.yStride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 0);
+        packet.yPlaneOffset = GST_VIDEO_INFO_PLANE_OFFSET(&info, 0);
+    }
+    if (planeCount > 1) {
+        packet.uvStride = GST_VIDEO_INFO_PLANE_STRIDE(&info, 1);
+        packet.uvPlaneOffset = GST_VIDEO_INFO_PLANE_OFFSET(&info, 1);
+    }
     packet.data = QByteArray(reinterpret_cast<const char*>(mapInfo.data), static_cast<int>(mapInfo.size));
     packet.pts = static_cast<std::int64_t>(GST_BUFFER_PTS(buffer));
     packet.captureTimestampNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     packet.frameId = PerformanceMonitor::instance()->recordFrameCaptured(packet.captureTimestampNs);
+    packet.dmaFd = dmaFd;
+    dmaFd = -1;
 
     gst_buffer_unmap(buffer, &mapInfo);
     gst_sample_unref(sample);

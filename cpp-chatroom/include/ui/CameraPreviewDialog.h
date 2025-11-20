@@ -8,6 +8,7 @@
 #include <QtGui/qpixmap.h>
 #include <QtWidgets/qdialog.h>
 #include <gst/gst.h>
+#include <gst/video/video.h>
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -33,6 +34,12 @@ struct FramePacket {
     QByteArray data;
     std::int64_t pts = 0;
     qint64 captureTimestampNs = 0;
+    int dmaFd = -1;
+    GstVideoFormat videoFormat = GST_VIDEO_FORMAT_UNKNOWN;
+    int yStride = 0;
+    int uvStride = 0;
+    int yPlaneOffset = 0;
+    int uvPlaneOffset = 0;
 };
 
 Q_DECLARE_METATYPE(FramePacket)
