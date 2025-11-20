@@ -131,10 +131,17 @@ public slots:
             // 1. RGA -> NPU Input (640x640)
             prepResult = preprocessor_.processNv12(nv12Input);
 
-            // 2. RGA -> Display Image (Scaled to e.g. 960x540 for UI performance)
-            // 使用较小的分辨率可以显著降低 Qt 渲染 (QPixmap::fromImage + scaled) 的耗时
-            // 保持 16:9 比例
-            displayResult = preprocessor_.processNv12ToDisplay(nv12Input, 960, 540);
+            // 2. RGA -> Display Image (Scaled for UI performance)
+            // 计算保持宽高比的显示尺寸，宽度限制在 640 以保证软件渲染性能
+            int displayW = 640;
+            int displayH = 360;
+            if (packet.width > 0 && packet.height > 0) {
+                // 保持原始比例
+                displayH = static_cast<int>(static_cast<float>(packet.height) * displayW / static_cast<float>(packet.width));
+                // 确保偶数高度 (RGA 偏好)
+                displayH = (displayH / 2) * 2;
+            }
+            displayResult = preprocessor_.processNv12ToDisplay(nv12Input, displayW, displayH);
 
         } else {
             // 回退路径
@@ -695,7 +702,9 @@ void CameraPreviewDialog::updateDisplayedPixmap()
     }
 
     const QSize targetSize = m_videoLabel->size();
-    const QPixmap scaled = m_currentPixmap.scaled(targetSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    // 使用 FastTransformation 替代 SmoothTransformation 以大幅降低 CPU 占用
+    // 因为源图像已经是 RGA 缩放过的较小尺寸，再次缩放开销较小，且 Fast 模式足够预览使用
+    const QPixmap scaled = m_currentPixmap.scaled(targetSize, Qt::KeepAspectRatio, Qt::FastTransformation);
     m_videoLabel->setPixmap(scaled);
     m_videoLabel->setText(QString());
 }
