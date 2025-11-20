@@ -8,6 +8,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QTableWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -30,12 +31,10 @@ QString formatPercent(double value, bool available, const QString& fallbackDetai
     return QStringLiteral("%1 %").arg(QString::number(value, 'f', value >= 100.0 ? 1 : 2));
 }
 
-QString formatMemoryKb(quint64 kilobytes) {
-    if (kilobytes == 0) {
-        return QStringLiteral("—");
-    }
+QString formatMemoryDetailed(quint64 kilobytes) {
     const double mib = static_cast<double>(kilobytes) / 1024.0;
-    return QStringLiteral("%1 MiB").arg(QString::number(mib, 'f', mib >= 100.0 ? 1 : 2));
+    return QStringLiteral("%1 MiB (%2 KB)")
+        .arg(QString::number(mib, 'f', mib >= 100.0 ? 1 : 2), QString::number(kilobytes));
 }
 
 } // namespace
@@ -47,13 +46,23 @@ PerformanceAnalyticsDialog::PerformanceAnalyticsDialog(QWidget* parent)
     , m_npuLabel(nullptr)
     , m_renderLabel(nullptr)
     , m_totalLatencyLabel(nullptr)
+    , m_resourceTimestampLabel(nullptr)
     , m_memoryLabel(nullptr)
+    , m_npuMemoryLabel(nullptr)
     , m_processCpuLabel(nullptr)
     , m_systemCpuLabel(nullptr)
     , m_npuUtilLabel(nullptr)
+    , m_npuFreqLabel(nullptr)
+    , m_npuPowerLabel(nullptr)
+    , m_npuDelayLabel(nullptr)
+    , m_npuVoltLabel(nullptr)
+    , m_npuVersionLabel(nullptr)
+    , m_npuStatusLabel(nullptr)
     , m_gpuUtilLabel(nullptr)
     , m_rgaUtilLabel(nullptr)
-    , m_historyTable(nullptr) {
+    , m_historyTable(nullptr)
+    , m_stageRefreshTimer(nullptr)
+    , m_resourceRefreshTimer(nullptr) {
     setWindowTitle(tr("性能分析"));
     resize(780, 560);
 
@@ -71,11 +80,23 @@ PerformanceAnalyticsDialog::PerformanceAnalyticsDialog(QWidget* parent)
             &PerformanceAnalyticsDialog::onResourceMetricsUpdated,
             Qt::QueuedConnection);
 
-    const auto history = monitor->recentFrameHistory();
+    const auto history = monitor->recentFrameHistory(kHistoryDisplayLimit);
     if (!history.isEmpty()) {
-        onFrameMetricsUpdated(history.last(), history);
+        applyFrameHistory(history);
+    } else {
+        clearStageSection();
     }
     onResourceMetricsUpdated(monitor->latestResourceSnapshot());
+
+    m_stageRefreshTimer = new QTimer(this);
+    m_stageRefreshTimer->setInterval(500);
+    connect(m_stageRefreshTimer, &QTimer::timeout, this, &PerformanceAnalyticsDialog::refreshStageMetrics);
+    m_stageRefreshTimer->start();
+
+    m_resourceRefreshTimer = new QTimer(this);
+    m_resourceRefreshTimer->setInterval(1000);
+    connect(m_resourceRefreshTimer, &QTimer::timeout, this, &PerformanceAnalyticsDialog::refreshResourceMetrics);
+    m_resourceRefreshTimer->start();
 }
 
 PerformanceAnalyticsDialog::~PerformanceAnalyticsDialog() = default;
@@ -108,25 +129,50 @@ void PerformanceAnalyticsDialog::initializeUi() {
     auto* resourceGroup = new QGroupBox(tr("系统资源"), this);
     auto* resourceLayout = new QGridLayout(resourceGroup);
 
+    m_resourceTimestampLabel = new QLabel(QStringLiteral("—"), resourceGroup);
     m_memoryLabel = new QLabel(QStringLiteral("—"), resourceGroup);
+    m_npuMemoryLabel = new QLabel(QStringLiteral("—"), resourceGroup);
     m_processCpuLabel = new QLabel(QStringLiteral("—"), resourceGroup);
     m_systemCpuLabel = new QLabel(QStringLiteral("—"), resourceGroup);
     m_npuUtilLabel = new QLabel(QStringLiteral("—"), resourceGroup);
+    m_npuFreqLabel = new QLabel(QStringLiteral("—"), resourceGroup);
+    m_npuPowerLabel = new QLabel(QStringLiteral("—"), resourceGroup);
+    m_npuDelayLabel = new QLabel(QStringLiteral("—"), resourceGroup);
+    m_npuVoltLabel = new QLabel(QStringLiteral("—"), resourceGroup);
+    m_npuVersionLabel = new QLabel(QStringLiteral("—"), resourceGroup);
+    m_npuStatusLabel = new QLabel(QStringLiteral("—"), resourceGroup);
+    m_npuStatusLabel->setWordWrap(true);
     m_gpuUtilLabel = new QLabel(QStringLiteral("—"), resourceGroup);
     m_rgaUtilLabel = new QLabel(QStringLiteral("—"), resourceGroup);
 
-    resourceLayout->addWidget(new QLabel(tr("进程内存:"), resourceGroup), 0, 0);
-    resourceLayout->addWidget(m_memoryLabel, 0, 1);
-    resourceLayout->addWidget(new QLabel(tr("进程 CPU:"), resourceGroup), 1, 0);
-    resourceLayout->addWidget(m_processCpuLabel, 1, 1);
-    resourceLayout->addWidget(new QLabel(tr("系统 CPU:"), resourceGroup), 2, 0);
-    resourceLayout->addWidget(m_systemCpuLabel, 2, 1);
-    resourceLayout->addWidget(new QLabel(tr("NPU 利用率:"), resourceGroup), 3, 0);
-    resourceLayout->addWidget(m_npuUtilLabel, 3, 1);
-    resourceLayout->addWidget(new QLabel(tr("GPU 利用率:"), resourceGroup), 4, 0);
-    resourceLayout->addWidget(m_gpuUtilLabel, 4, 1);
-    resourceLayout->addWidget(new QLabel(tr("RGA 利用率:"), resourceGroup), 5, 0);
-    resourceLayout->addWidget(m_rgaUtilLabel, 5, 1);
+    resourceLayout->addWidget(new QLabel(tr("采样时间:"), resourceGroup), 0, 0);
+    resourceLayout->addWidget(m_resourceTimestampLabel, 0, 1);
+    resourceLayout->addWidget(new QLabel(tr("进程内存:"), resourceGroup), 1, 0);
+    resourceLayout->addWidget(m_memoryLabel, 1, 1);
+    resourceLayout->addWidget(new QLabel(tr("进程 CPU:"), resourceGroup), 2, 0);
+    resourceLayout->addWidget(m_processCpuLabel, 2, 1);
+    resourceLayout->addWidget(new QLabel(tr("系统 CPU:"), resourceGroup), 3, 0);
+    resourceLayout->addWidget(m_systemCpuLabel, 3, 1);
+    resourceLayout->addWidget(new QLabel(tr("NPU 利用率:"), resourceGroup), 4, 0);
+    resourceLayout->addWidget(m_npuUtilLabel, 4, 1);
+    resourceLayout->addWidget(new QLabel(tr("NPU 频率:"), resourceGroup), 5, 0);
+    resourceLayout->addWidget(m_npuFreqLabel, 5, 1);
+    resourceLayout->addWidget(new QLabel(tr("NPU 电源状态:"), resourceGroup), 6, 0);
+    resourceLayout->addWidget(m_npuPowerLabel, 6, 1);
+    resourceLayout->addWidget(new QLabel(tr("NPU Delayms:"), resourceGroup), 7, 0);
+    resourceLayout->addWidget(m_npuDelayLabel, 7, 1);
+    resourceLayout->addWidget(new QLabel(tr("NPU 电压:"), resourceGroup), 8, 0);
+    resourceLayout->addWidget(m_npuVoltLabel, 8, 1);
+    resourceLayout->addWidget(new QLabel(tr("NPU 驱动版本:"), resourceGroup), 9, 0);
+    resourceLayout->addWidget(m_npuVersionLabel, 9, 1);
+    resourceLayout->addWidget(new QLabel(tr("NPU 内存:"), resourceGroup), 10, 0);
+    resourceLayout->addWidget(m_npuMemoryLabel, 10, 1);
+    resourceLayout->addWidget(new QLabel(tr("NPU 调试信息:"), resourceGroup), 11, 0);
+    resourceLayout->addWidget(m_npuStatusLabel, 11, 1);
+    resourceLayout->addWidget(new QLabel(tr("GPU 利用率:"), resourceGroup), 12, 0);
+    resourceLayout->addWidget(m_gpuUtilLabel, 12, 1);
+    resourceLayout->addWidget(new QLabel(tr("RGA 利用率:"), resourceGroup), 13, 0);
+    resourceLayout->addWidget(m_rgaUtilLabel, 13, 1);
 
     resourceLayout->setColumnStretch(1, 1);
 
@@ -151,16 +197,31 @@ void PerformanceAnalyticsDialog::initializeUi() {
 
 void PerformanceAnalyticsDialog::onFrameMetricsUpdated(const PerformanceMonitor::FrameTimings& latest,
                                                        const QVector<PerformanceMonitor::FrameTimings>& history) {
-    updateStageSection(latest, history);
-    refreshHistoryTable(history);
+    Q_UNUSED(latest);
+    applyFrameHistory(history);
 }
 
 void PerformanceAnalyticsDialog::onResourceMetricsUpdated(const PerformanceMonitor::ResourceSnapshot& snapshot) {
     updateResourceSection(snapshot);
 }
 
+void PerformanceAnalyticsDialog::refreshStageMetrics() {
+    PerformanceMonitor* monitor = PerformanceMonitor::instance();
+    applyFrameHistory(monitor->recentFrameHistory(kHistoryDisplayLimit));
+}
+
+void PerformanceAnalyticsDialog::refreshResourceMetrics() {
+    PerformanceMonitor* monitor = PerformanceMonitor::instance();
+    updateResourceSection(monitor->latestResourceSnapshot());
+}
+
 void PerformanceAnalyticsDialog::updateStageSection(const PerformanceMonitor::FrameTimings& latest,
                                                     const QVector<PerformanceMonitor::FrameTimings>& history) {
+    if (history.isEmpty()) {
+        clearStageSection();
+        return;
+    }
+
     auto computeAverage = [](const QVector<PerformanceMonitor::FrameTimings>& samples,
                              auto accessor) -> QString {
         qint64 sum = 0;
@@ -198,10 +259,36 @@ void PerformanceAnalyticsDialog::updateStageSection(const PerformanceMonitor::Fr
 }
 
 void PerformanceAnalyticsDialog::updateResourceSection(const PerformanceMonitor::ResourceSnapshot& snapshot) {
-    m_memoryLabel->setText(formatMemoryKb(snapshot.processMemoryKb));
+    m_resourceTimestampLabel->setText(snapshot.timestamp.toString(QStringLiteral("HH:mm:ss")));
+    m_memoryLabel->setText(formatMemoryDetailed(snapshot.processMemoryKb));
     m_processCpuLabel->setText(formatPercent(snapshot.processCpuPercent, true, QString()));
     m_systemCpuLabel->setText(formatPercent(snapshot.totalCpuPercent, true, QString()));
     m_npuUtilLabel->setText(formatPercent(snapshot.npuLoad.value, snapshot.npuLoad.available, snapshot.npuLoad.detail));
+    auto setOrDash = [](QLabel* label, const QString& text) {
+        if (!label) {
+            return;
+        }
+        label->setText(text.isEmpty() ? QStringLiteral("—") : text);
+    };
+
+    setOrDash(m_npuFreqLabel, snapshot.npuFrequency);
+    setOrDash(m_npuPowerLabel, snapshot.npuPowerState);
+    setOrDash(m_npuDelayLabel, snapshot.npuDelayMs);
+    setOrDash(m_npuVoltLabel, snapshot.npuVoltage);
+    setOrDash(m_npuVersionLabel, snapshot.npuDriverVersion);
+
+    if (snapshot.npuMemory.available) {
+        m_npuMemoryLabel->setText(tr("模型 %1 · 内部 %2 · DMA %3 · SRAM 空余 %4 / %5")
+                                      .arg(formatMemoryDetailed(snapshot.npuMemory.modelWeightsKb),
+                                           formatMemoryDetailed(snapshot.npuMemory.internalBuffersKb),
+                                           formatMemoryDetailed(snapshot.npuMemory.dmaAllocatedKb),
+                                           formatMemoryDetailed(snapshot.npuMemory.freeSramKb),
+                                           formatMemoryDetailed(snapshot.npuMemory.totalSramKb)));
+    } else {
+        setOrDash(m_npuMemoryLabel, snapshot.npuMemory.detail);
+    }
+
+    setOrDash(m_npuStatusLabel, snapshot.npuStaticDetail);
     m_gpuUtilLabel->setText(formatPercent(snapshot.gpuLoad.value, snapshot.gpuLoad.available, snapshot.gpuLoad.detail));
     m_rgaUtilLabel->setText(formatPercent(snapshot.rgaLoad.value, snapshot.rgaLoad.available, snapshot.rgaLoad.detail));
 }
@@ -209,6 +296,9 @@ void PerformanceAnalyticsDialog::updateResourceSection(const PerformanceMonitor:
 void PerformanceAnalyticsDialog::refreshHistoryTable(const QVector<PerformanceMonitor::FrameTimings>& history) {
     const int rowCount = std::min(history.size(), kHistoryDisplayLimit);
     m_historyTable->setRowCount(rowCount);
+    if (rowCount == 0) {
+        return;
+    }
 
     int row = 0;
     for (int i = history.size() - 1; i >= 0 && row < rowCount; --i, ++row) {
@@ -227,4 +317,25 @@ void PerformanceAnalyticsDialog::refreshHistoryTable(const QVector<PerformanceMo
         setCell(5, formatMilliseconds(item.renderUs));
         setCell(6, formatMilliseconds(item.totalLatencyUs));
     }
+}
+
+void PerformanceAnalyticsDialog::applyFrameHistory(const QVector<PerformanceMonitor::FrameTimings>& history) {
+    if (history.isEmpty()) {
+        clearStageSection();
+        return;
+    }
+
+    updateStageSection(history.last(), history);
+    refreshHistoryTable(history);
+}
+
+void PerformanceAnalyticsDialog::clearStageSection() {
+    const QString dash = QStringLiteral("—");
+    const QString placeholder = tr("%1 ms (平均 %2 ms)").arg(dash, dash);
+    m_captureDelayLabel->setText(placeholder);
+    m_preprocessLabel->setText(placeholder);
+    m_npuLabel->setText(placeholder);
+    m_renderLabel->setText(placeholder);
+    m_totalLatencyLabel->setText(placeholder);
+    m_historyTable->setRowCount(0);
 }

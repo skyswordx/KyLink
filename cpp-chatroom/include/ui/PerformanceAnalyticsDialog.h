@@ -8,6 +8,7 @@
 
 class QLabel;
 class QTableWidget;
+class QTimer;
 
 class PerformanceAnalyticsDialog final : public QDialog {
     Q_OBJECT
@@ -20,9 +21,13 @@ private slots:
     void onFrameMetricsUpdated(const PerformanceMonitor::FrameTimings& latest,
                                const QVector<PerformanceMonitor::FrameTimings>& history);
     void onResourceMetricsUpdated(const PerformanceMonitor::ResourceSnapshot& snapshot);
+    void refreshStageMetrics();
+    void refreshResourceMetrics();
 
 private:
     void initializeUi();
+    void applyFrameHistory(const QVector<PerformanceMonitor::FrameTimings>& history);
+    void clearStageSection();
     void refreshHistoryTable(const QVector<PerformanceMonitor::FrameTimings>& history);
     void updateStageSection(const PerformanceMonitor::FrameTimings& latest,
                             const QVector<PerformanceMonitor::FrameTimings>& history);
@@ -33,13 +38,23 @@ private:
     QLabel* m_npuLabel;
     QLabel* m_renderLabel;
     QLabel* m_totalLatencyLabel;
+    QLabel* m_resourceTimestampLabel;
     QLabel* m_memoryLabel;
+    QLabel* m_npuMemoryLabel;
     QLabel* m_processCpuLabel;
     QLabel* m_systemCpuLabel;
     QLabel* m_npuUtilLabel;
+    QLabel* m_npuFreqLabel;
+    QLabel* m_npuPowerLabel;
+    QLabel* m_npuDelayLabel;
+    QLabel* m_npuVoltLabel;
+    QLabel* m_npuVersionLabel;
+    QLabel* m_npuStatusLabel;
     QLabel* m_gpuUtilLabel;
     QLabel* m_rgaUtilLabel;
     QTableWidget* m_historyTable;
+    QTimer* m_stageRefreshTimer;
+    QTimer* m_resourceRefreshTimer;
 };
 
 #endif // PERFORMANCE_ANALYTICS_DIALOG_H

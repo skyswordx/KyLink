@@ -4,7 +4,9 @@
 #include <QtCore/QDebug>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
+#include <QtCore/QMetaObject>
 #include <QtCore/QMutexLocker>
+#include <QtCore/QProcess>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QStringList>
 
@@ -18,8 +20,11 @@
 
 namespace {
 constexpr int kHistorySizeLimit = 120;
+constexpr int kHistorySignalTailLimit = 120;
 constexpr int kResourceSampleIntervalMs = 1000;
 constexpr qint64 kFrameTimeoutNs = static_cast<qint64>(5) * 1000 * 1000 * 1000; // 5 seconds
+
+const QString kRknpuDebugRoot = QStringLiteral("/sys/kernel/debug/rknpu");
 
 inline qint64 toNanoseconds(const std::chrono::steady_clock::time_point& tp) {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
@@ -27,6 +32,42 @@ inline qint64 toNanoseconds(const std::chrono::steady_clock::time_point& tp) {
 
 inline qint64 toMicroseconds(const std::chrono::steady_clock::duration& duration) {
     return std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
+}
+
+inline quint64 bytesToKilobytes(quint64 bytes) {
+    return bytes / 1024;
+}
+
+QString formatFrequencyFromHz(const QString& raw) {
+    bool ok = false;
+    const quint64 hz = raw.toULongLong(&ok);
+    if (!ok || hz == 0) {
+        return raw;
+    }
+    const double mhz = static_cast<double>(hz) / 1'000'000.0;
+    return QStringLiteral("%1 MHz (%2 Hz)")
+        .arg(QString::number(mhz, 'f', mhz >= 100.0 ? 0 : 2), QString::number(hz));
+}
+
+QString formatVoltageFromMicroVolts(const QString& raw) {
+    bool ok = false;
+    const quint64 microVolts = raw.toULongLong(&ok);
+    if (!ok || microVolts == 0) {
+        return raw;
+    }
+    const double volts = static_cast<double>(microVolts) / 1'000'000.0;
+    const double milliVolts = static_cast<double>(microVolts) / 1'000.0;
+    return QStringLiteral("%1 V (%2 mV)")
+        .arg(QString::number(volts, 'f', 3), QString::number(milliVolts, 'f', milliVolts >= 100.0 ? 0 : 1));
+}
+
+QString formatDelayMs(const QString& raw) {
+    bool ok = false;
+    const quint64 milliseconds = raw.toULongLong(&ok);
+    if (!ok) {
+        return raw;
+    }
+    return QStringLiteral("%1 ms").arg(milliseconds);
 }
 
 bool tryParsePercentage(const QByteArray& content, double* valueOut) {
@@ -60,6 +101,7 @@ PerformanceMonitor::PerformanceMonitor(QObject* parent)
     : QObject(parent)
     , m_resourceTimer(this)
     , m_nextFrameId(1)
+    , m_npuContext(0)
     , m_lastProcessTicks(0)
     , m_lastTotalTicks(0)
     , m_lastActiveTicks(0) {
@@ -162,21 +204,32 @@ void PerformanceMonitor::recordRenderStage(quint64 frameId,
 
         m_pendingFrames.erase(it);
 
-        historyCopy.reserve(static_cast<int>(m_history.size()));
-        for (const auto& item : m_history) {
-            historyCopy.append(item);
+        const int available = static_cast<int>(m_history.size());
+        const int copyCount = std::min(available, kHistorySignalTailLimit);
+        historyCopy.reserve(copyCount);
+        const int startIndex = available - copyCount;
+        for (int i = startIndex; i < available; ++i) {
+            historyCopy.append(m_history[static_cast<std::size_t>(i)]);
         }
     }
 
     emit frameMetricsUpdated(summary, historyCopy);
 }
 
-QVector<PerformanceMonitor::FrameTimings> PerformanceMonitor::recentFrameHistory() const {
+QVector<PerformanceMonitor::FrameTimings> PerformanceMonitor::recentFrameHistory(int maxSamples) const {
     QMutexLocker locker(&m_mutex);
     QVector<FrameTimings> historyCopy;
-    historyCopy.reserve(static_cast<int>(m_history.size()));
-    for (const auto& entry : m_history) {
-        historyCopy.append(entry);
+    if (m_history.empty()) {
+        return historyCopy;
+    }
+
+    const int available = static_cast<int>(m_history.size());
+    const int count = maxSamples > 0 ? std::min(maxSamples, available) : available;
+    historyCopy.reserve(count);
+
+    const int startIndex = available - count;
+    for (int i = startIndex; i < available; ++i) {
+        historyCopy.append(m_history[static_cast<std::size_t>(i)]);
     }
     return historyCopy;
 }
@@ -184,6 +237,93 @@ QVector<PerformanceMonitor::FrameTimings> PerformanceMonitor::recentFrameHistory
 PerformanceMonitor::ResourceSnapshot PerformanceMonitor::latestResourceSnapshot() const {
     QMutexLocker locker(&m_mutex);
     return m_latestResources;
+}
+
+void PerformanceMonitor::setNpuContext(rknn_context context) {
+    {
+        QMutexLocker locker(&m_npuMutex);
+        m_npuContext = context;
+    }
+    QMetaObject::invokeMethod(this,
+                              &PerformanceMonitor::sampleResourceUsage,
+                              Qt::QueuedConnection);
+}
+
+void PerformanceMonitor::ensureNpuStaticInfo() {
+    QMutexLocker locker(&m_npuInfoMutex);
+
+    auto readTrimmed = [](const QString& path, QString* out, QStringList* errors) {
+        QByteArray content;
+        QString errorDetail;
+        if (!PerformanceMonitor::readFileContent(path, &content, &errorDetail)) {
+            if (!errorDetail.isEmpty()) {
+                errors->append(errorDetail);
+            }
+            return;
+        }
+
+        const QString trimmed = QString::fromUtf8(content).trimmed();
+        if (trimmed.isEmpty()) {
+            errors->append(QObject::tr("%1 返回空内容").arg(path));
+            return;
+        }
+        *out = trimmed;
+    };
+
+    QStringList errors;
+
+    if (m_npuStaticInfo.frequency.isEmpty()) {
+        QString value;
+        readTrimmed(kRknpuDebugRoot + QStringLiteral("/freq"), &value, &errors);
+        if (!value.isEmpty()) {
+            m_npuStaticInfo.frequency = formatFrequencyFromHz(value);
+        }
+    }
+
+    if (m_npuStaticInfo.powerState.isEmpty()) {
+        QString value;
+        readTrimmed(kRknpuDebugRoot + QStringLiteral("/power"), &value, &errors);
+        if (!value.isEmpty()) {
+            m_npuStaticInfo.powerState = value;
+        }
+    }
+
+    if (m_npuStaticInfo.delayMs.isEmpty()) {
+        QString value;
+        readTrimmed(kRknpuDebugRoot + QStringLiteral("/delayms"), &value, &errors);
+        if (!value.isEmpty()) {
+            m_npuStaticInfo.delayMs = formatDelayMs(value);
+        }
+    }
+
+    if (m_npuStaticInfo.voltage.isEmpty()) {
+        QString value;
+        readTrimmed(kRknpuDebugRoot + QStringLiteral("/volt"), &value, &errors);
+        if (!value.isEmpty()) {
+            m_npuStaticInfo.voltage = formatVoltageFromMicroVolts(value);
+        }
+    }
+
+    if (m_npuStaticInfo.version.isEmpty()) {
+        QString value;
+        readTrimmed(kRknpuDebugRoot + QStringLiteral("/version"), &value, &errors);
+        if (!value.isEmpty()) {
+            m_npuStaticInfo.version = value;
+        }
+    }
+
+    const bool hasAny = !m_npuStaticInfo.frequency.isEmpty() ||
+                        !m_npuStaticInfo.powerState.isEmpty() ||
+                        !m_npuStaticInfo.delayMs.isEmpty() ||
+                        !m_npuStaticInfo.voltage.isEmpty() ||
+                        !m_npuStaticInfo.version.isEmpty();
+
+    m_npuStaticInfo.available = hasAny;
+    if (!errors.isEmpty() && !hasAny) {
+        m_npuStaticInfo.detail = errors.join(QStringLiteral("; "));
+    } else if (hasAny) {
+        m_npuStaticInfo.detail.clear();
+    }
 }
 
 void PerformanceMonitor::sampleResourceUsage() {
@@ -292,45 +432,59 @@ void PerformanceMonitor::sampleResourceUsage() {
         }
     }
 
-    auto detectLoad = [](const QStringList& candidatePaths, PerformanceMetricAvailability* metric) {
+    auto readPercentageMetric = [this](const QStringList& candidatePaths,
+                                       PerformanceMetricAvailability* metric,
+                                       const QString& fallbackDetail) {
         if (!metric) {
             return;
         }
+
+        QStringList errors;
         for (const QString& path : candidatePaths) {
             if (!QFileInfo::exists(path)) {
                 continue;
             }
+
             QByteArray content;
-            if (!PerformanceMonitor::readFileContent(path, &content)) {
+            QString errorDetail;
+            if (!PerformanceMonitor::readFileContent(path, &content, &errorDetail)) {
+                if (!errorDetail.isEmpty()) {
+                    errors.append(errorDetail);
+                }
                 continue;
             }
+
             double parsed = 0.0;
             if (tryParsePercentage(content, &parsed)) {
                 metric->available = true;
                 metric->value = parsed;
-                metric->detail = QString();
+                metric->detail.clear();
                 return;
             }
+
+            errors.append(tr("无法解析 %1 内容").arg(path));
         }
+
         metric->available = false;
         metric->value = 0.0;
+        if (!errors.isEmpty()) {
+            metric->detail = errors.join(QStringLiteral("; "));
+        } else {
+            metric->detail = fallbackDetail;
+        }
     };
 
-    detectLoad({QStringLiteral("/sys/kernel/debug/rknpu/load"),
-                QStringLiteral("/proc/rknpu/load"),
-                QStringLiteral("/sys/class/devfreq/rknpu/load")},
-               &snapshot.npuLoad);
-    if (!snapshot.npuLoad.available) {
-        snapshot.npuLoad.detail = QStringLiteral("未检测到可用的 NPU 占用率接口");
-    }
+    readPercentageMetric({QStringLiteral("/sys/kernel/debug/rknpu/load"),
+                          QStringLiteral("/proc/rknpu/load"),
+                          QStringLiteral("/sys/class/devfreq/rknpu/load")},
+                         &snapshot.npuLoad,
+                         tr("未检测到可用的 NPU 占用率接口"));
 
-    detectLoad({QStringLiteral("/sys/class/devfreq/ff9a0000.gpu/load"),
-                QStringLiteral("/sys/class/devfreq/ff9a0000.gpu/utilization"),
-                QStringLiteral("/sys/kernel/debug/mali0/load")},
-               &snapshot.gpuLoad);
-    if (!snapshot.gpuLoad.available) {
-        snapshot.gpuLoad.detail = QStringLiteral("GPU 驱动未提供占用率数据或驱动未加载");
-    }
+    readPercentageMetric({QStringLiteral("/sys/class/devfreq/ff9a0000.gpu/load"),
+                          QStringLiteral("/sys/class/devfreq/ff9a0000.gpu/utilization"),
+                          QStringLiteral("/sys/kernel/debug/mali0/load")},
+                         &snapshot.gpuLoad,
+                         tr("GPU 驱动未提供占用率数据或驱动未加载"));
 
     PerformanceMetricAvailability rgaMetric;
     if (QFileInfo::exists(QStringLiteral("/dev/rga"))) {
@@ -341,6 +495,51 @@ void PerformanceMonitor::sampleResourceUsage() {
         rgaMetric.detail = QStringLiteral("未检测到 /dev/rga 设备节点");
     }
     snapshot.rgaLoad = rgaMetric;
+
+    {
+        QMutexLocker ctxLocker(&m_npuMutex);
+        if (m_npuContext != 0) {
+            rknn_mem_size memInfo{};
+            const int ret = rknn_query(m_npuContext, RKNN_QUERY_MEM_SIZE, &memInfo, sizeof(memInfo));
+            if (ret == RKNN_SUCC) {
+                snapshot.npuMemory.available = true;
+                snapshot.npuMemory.detail.clear();
+                snapshot.npuMemory.modelWeightsKb = bytesToKilobytes(memInfo.total_weight_size);
+                snapshot.npuMemory.internalBuffersKb = bytesToKilobytes(memInfo.total_internal_size);
+                snapshot.npuMemory.dmaAllocatedKb = bytesToKilobytes(memInfo.total_dma_allocated_size);
+                snapshot.npuMemory.totalSramKb = bytesToKilobytes(memInfo.total_sram_size);
+                snapshot.npuMemory.freeSramKb = bytesToKilobytes(memInfo.free_sram_size);
+            } else {
+                snapshot.npuMemory.available = false;
+                snapshot.npuMemory.modelWeightsKb = 0;
+                snapshot.npuMemory.internalBuffersKb = 0;
+                snapshot.npuMemory.dmaAllocatedKb = 0;
+                snapshot.npuMemory.totalSramKb = 0;
+                snapshot.npuMemory.freeSramKb = 0;
+                snapshot.npuMemory.detail = tr("rknn_query(RKNN_QUERY_MEM_SIZE) 失败: %1").arg(ret);
+            }
+        } else {
+            snapshot.npuMemory.available = false;
+            snapshot.npuMemory.modelWeightsKb = 0;
+            snapshot.npuMemory.internalBuffersKb = 0;
+            snapshot.npuMemory.dmaAllocatedKb = 0;
+            snapshot.npuMemory.totalSramKb = 0;
+            snapshot.npuMemory.freeSramKb = 0;
+            snapshot.npuMemory.detail = tr("NPU 模型未初始化");
+        }
+    }
+
+    ensureNpuStaticInfo();
+
+    {
+        QMutexLocker infoLocker(&m_npuInfoMutex);
+        snapshot.npuFrequency = m_npuStaticInfo.frequency;
+        snapshot.npuPowerState = m_npuStaticInfo.powerState;
+        snapshot.npuDelayMs = m_npuStaticInfo.delayMs;
+        snapshot.npuVoltage = m_npuStaticInfo.voltage;
+        snapshot.npuDriverVersion = m_npuStaticInfo.version;
+        snapshot.npuStaticDetail = m_npuStaticInfo.detail;
+    }
 
     {
         QMutexLocker locker(&m_mutex);
@@ -370,16 +569,64 @@ qint64 PerformanceMonitor::steadyNowNs() {
     return toNanoseconds(std::chrono::steady_clock::now());
 }
 
-bool PerformanceMonitor::readFileContent(const QString& path, QByteArray* out) {
+bool PerformanceMonitor::readFileContent(const QString& path, QByteArray* out, QString* errorDetail) {
+    if (errorDetail) {
+        errorDetail->clear();
+    }
+
     if (!out) {
+        if (errorDetail) {
+            *errorDetail = QObject::tr("未提供输出缓冲区");
+        }
         return false;
     }
 
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        *out = file.readAll();
+        return true;
+    }
+
+    if (errorDetail) {
+        switch (file.error()) {
+        case QFile::PermissionsError:
+            *errorDetail = QObject::tr("读取 %1 权限不足").arg(path);
+            break;
+        case QFile::OpenError:
+        case QFile::ReadError:
+            *errorDetail = file.errorString();
+            break;
+        default:
+            break;
+        }
+    }
+
+    QProcess process;
+    process.start(QStringLiteral("cat"), {path});
+    if (!process.waitForFinished(200)) {
+        process.kill();
+        process.waitForFinished();
+        if (errorDetail) {
+            *errorDetail = QObject::tr("读取 %1 超时").arg(path);
+        }
         return false;
     }
-    *out = file.readAll();
+
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        if (errorDetail) {
+            const QString stderrOutput = QString::fromUtf8(process.readAllStandardError()).trimmed();
+            if (stderrOutput.contains(QStringLiteral("Permission denied"), Qt::CaseInsensitive)) {
+                *errorDetail = QObject::tr("读取 %1 权限不足").arg(path);
+            } else if (!stderrOutput.isEmpty()) {
+                *errorDetail = stderrOutput;
+            } else {
+                *errorDetail = QObject::tr("读取 %1 失败 (退出码 %2)").arg(path).arg(process.exitCode());
+            }
+        }
+        return false;
+    }
+
+    *out = process.readAllStandardOutput();
     return true;
 }
 

@@ -4,6 +4,8 @@
 
 #include "npu/postprocess.h"
 
+#include "backend/PerformanceMonitor.h"
+
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
@@ -85,6 +87,7 @@ YoloV5Runner::~YoloV5Runner() {
 
 void YoloV5Runner::release() {
     if (ctx_ != 0) {
+        PerformanceMonitor::instance()->setNpuContext(0);
         rknn_destroy(ctx_);
         ctx_ = 0;
     }
@@ -202,6 +205,7 @@ bool YoloV5Runner::loadModel(const QString &modelPath, QString *errorOut) {
     }
 
     ready_ = true;
+    PerformanceMonitor::instance()->setNpuContext(ctx_);
     return true;
 }
 

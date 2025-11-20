@@ -9,6 +9,8 @@
 #include <QtCore/QVector>
 #include <QtCore/QString>
 
+#include <rknn_api.h>
+
 #include <cstdint>
 #include <deque>
 #include <unordered_map>
@@ -16,6 +18,16 @@
 struct PerformanceMetricAvailability {
     bool available = false;
     double value = 0.0; // interpreted as percentage when available
+    QString detail;
+};
+
+struct NpuMemoryUsage {
+    bool available = false;
+    quint64 modelWeightsKb = 0;
+    quint64 internalBuffersKb = 0;
+    quint64 dmaAllocatedKb = 0;
+    quint64 totalSramKb = 0;
+    quint64 freeSramKb = 0;
     QString detail;
 };
 
@@ -43,6 +55,13 @@ public:
         PerformanceMetricAvailability npuLoad;
         PerformanceMetricAvailability gpuLoad;
         PerformanceMetricAvailability rgaLoad;
+        NpuMemoryUsage npuMemory;
+        QString npuFrequency;
+        QString npuPowerState;
+        QString npuDelayMs;
+        QString npuVoltage;
+        QString npuDriverVersion;
+        QString npuStaticDetail;
     };
 
     static PerformanceMonitor* instance();
@@ -58,8 +77,9 @@ public:
                            qint64 renderDurationUs,
                            qint64 renderCompleteTimestampNs);
 
-    QVector<FrameTimings> recentFrameHistory() const;
+    QVector<FrameTimings> recentFrameHistory(int maxSamples = -1) const;
     ResourceSnapshot latestResourceSnapshot() const;
+    void setNpuContext(rknn_context context);
 
 signals:
     void frameMetricsUpdated(const PerformanceMonitor::FrameTimings& latest,
@@ -70,6 +90,16 @@ private slots:
     void sampleResourceUsage();
 
 private:
+    struct NpuStaticInfo {
+        bool available = false;
+        QString frequency;
+        QString powerState;
+        QString delayMs;
+        QString voltage;
+        QString version;
+        QString detail;
+    };
+
     struct FrameRecord {
         qint64 captureTimestampNs = 0;
         qint64 detectionCompleteTimestampNs = 0;
@@ -86,16 +116,21 @@ private:
     void pruneStaleFrames(qint64 nowNs);
 
     static qint64 steadyNowNs();
-    static bool readFileContent(const QString& path, QByteArray* out);
+    static bool readFileContent(const QString& path, QByteArray* out, QString* errorDetail = nullptr);
 
     static double ticksToPercent(quint64 deltaTicks, quint64 deltaTotalTicks);
+    void ensureNpuStaticInfo();
 
     QTimer m_resourceTimer;
     mutable QMutex m_mutex;
+    mutable QMutex m_npuMutex;
+    mutable QMutex m_npuInfoMutex;
     std::unordered_map<quint64, FrameRecord> m_pendingFrames;
     std::deque<FrameTimings> m_history;
     ResourceSnapshot m_latestResources;
     quint64 m_nextFrameId;
+    rknn_context m_npuContext;
+    NpuStaticInfo m_npuStaticInfo;
 
     // CPU sampling state
     quint64 m_lastProcessTicks;
