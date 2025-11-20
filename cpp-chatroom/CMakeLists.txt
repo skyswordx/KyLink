@@ -14,6 +14,8 @@ find_package(Qt5 5.12.8 REQUIRED COMPONENTS Core Gui Widgets Network Multimedia 
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-video-1.0 gstreamer-app-1.0)
+pkg_check_modules(RGA REQUIRED librga)
+pkg_check_modules(RKMPP REQUIRED rockchip_mpp)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 
 set(_rknn_hint_paths)
@@ -61,6 +63,7 @@ file(GLOB UI_FILES "${CMAKE_SOURCE_DIR}/ui/*.ui")
 set(SOURCES
     src/app/main.cpp
     src/backend/FeiqBackend.cpp
+    src/backend/RgaSelfTest.cpp
     src/backend/PerformanceMonitor.cpp
     src/npu/YoloV5Runner.cpp
     src/npu/postprocess.cpp
@@ -76,6 +79,7 @@ set(SOURCES
 
 set(HEADERS
     include/backend/FeiqBackend.h
+    include/backend/RgaSelfTest.h
     include/backend/PerformanceMonitor.h
     include/domain/FeiqTypes.h
     include/npu/YoloV5Runner.h
@@ -119,16 +123,25 @@ target_link_libraries(${PROJECT_NAME}
 target_include_directories(${PROJECT_NAME} PRIVATE ${GSTREAMER_INCLUDE_DIRS})
 target_include_directories(${PROJECT_NAME} PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_include_directories(${PROJECT_NAME} PRIVATE ${RKNN_INCLUDE_DIR})
+target_include_directories(${PROJECT_NAME} PRIVATE ${RGA_INCLUDE_DIRS})
+target_include_directories(${PROJECT_NAME} PRIVATE ${RKMPP_INCLUDE_DIRS})
 target_link_directories(${PROJECT_NAME} PRIVATE ${GSTREAMER_LIBRARY_DIRS})
+target_link_directories(${PROJECT_NAME} PRIVATE ${RGA_LIBRARY_DIRS})
+target_link_directories(${PROJECT_NAME} PRIVATE ${RKMPP_LIBRARY_DIRS})
 target_compile_options(${PROJECT_NAME} PRIVATE ${GSTREAMER_CFLAGS_OTHER})
+target_compile_options(${PROJECT_NAME} PRIVATE ${RGA_CFLAGS_OTHER})
+target_compile_options(${PROJECT_NAME} PRIVATE ${RKMPP_CFLAGS_OTHER})
 
 target_compile_definitions(${PROJECT_NAME}
     PRIVATE PROJECT_VERSION_STR="${PROJECT_VERSION}"
+    PRIVATE $<$<BOOL:${RGA_FOUND}>:HAVE_RGA>
 )
 
 target_link_libraries(${PROJECT_NAME}
     ${OpenCV_LIBS}
     ${RKNNRT_LIBRARY}
+    ${RGA_LIBRARIES}
+    ${RKMPP_LIBRARIES}
 )
 
 set(YOLO_REFERENCE_ROOT ${CMAKE_SOURCE_DIR}/../Reference/YoloV5-NPU)

@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QStandardPaths>
 
+#include "backend/RgaSelfTest.h"
 #include "npu/YoloV5Runner.h"
 #include "ui/MainWindow.h"
 
@@ -33,6 +34,11 @@ int main(int argc, char* argv[])
     YoloV5Runner runner;
     if (!runner.runSample(modelPath, imagePath, outputPath, &npuError)) {
         qWarning().noquote() << QStringLiteral("NPU 示例推理失败: %1").arg(npuError);
+    }
+
+    QString rgaError;
+    if (!diagnostics::runRgaSelfTest(&rgaError)) {
+        qWarning().noquote() << QStringLiteral("RGA 自检失败: %1").arg(rgaError);
     }
 
     // 创建并显示主窗口
