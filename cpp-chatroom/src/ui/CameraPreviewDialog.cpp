@@ -50,7 +50,13 @@ class CameraPreviewDialog::DetectionWorker final : public QObject {
 
 public:
     explicit DetectionWorker(QObject* parent = nullptr)
-        : QObject(parent) {}
+        : QObject(parent) {
+        connect(PerformanceMonitor::instance(), &PerformanceMonitor::profilingRequested,
+                this, [this]() {
+                    QMutexLocker locker(&m_mutex);
+                    m_profilingPending = true;
+                }, Qt::DirectConnection);
+    }
 
     bool loadModel(const QString& modelPath, QString* errorOut) {
         QString error;
@@ -206,6 +212,32 @@ public slots:
         YoloV5Runner::InferenceBreakdown breakdown;
         breakdown.preprocessUs = prepResult.durationUs;
 
+        // 检查是否需要进行性能分析 (Profiling)
+        QString perfDetail;
+        QString* perfDetailPtr = nullptr;
+        bool profilingActive = false;
+        {
+            QMutexLocker locker(&m_mutex);
+            if (m_profilingPending) {
+                m_profilingPending = false;
+                profilingActive = true;
+            }
+        }
+
+        if (profilingActive) {
+            // 尝试开启性能模式 (会重新加载模型，耗时较长)
+            if (runner_.reinit(true)) {
+                perfDetailPtr = &perfDetail;
+            } else {
+                PerformanceMonitor::instance()->submitNpuPerfDetail(tr("无法开启性能模式：模型重载失败"));
+                profilingActive = false;
+                // 如果开启失败且模型未就绪（可能在 reinit 中被释放），尝试恢复普通模式
+                if (!runner_.isReady()) {
+                    runner_.reinit(false);
+                }
+            }
+        }
+
         // 传入空的 originalFrameBgr 和 nullptr visualizedFrame，避免 YoloV5Runner 内部的 OpenCV 绘图和拷贝
         bool inferenceOk = runner_.inferFromRgbBuffer(cv::Mat(), // 空 Mat
                                                       packet.width, // 原始宽
@@ -217,7 +249,20 @@ public slots:
                                                       &inferenceTimeMs,
                                                       nullptr, // 不生成 visualizedFrame
                                                       &error,
-                                                      &breakdown);
+                                                      &breakdown,
+                                                      perfDetailPtr);
+        
+        if (profilingActive) {
+            if (inferenceOk && !perfDetail.isEmpty()) {
+                PerformanceMonitor::instance()->submitNpuPerfDetail(perfDetail);
+            } else if (!inferenceOk) {
+                PerformanceMonitor::instance()->submitNpuPerfDetail(tr("性能分析失败：推理过程出错 - %1").arg(error));
+            } else {
+                PerformanceMonitor::instance()->submitNpuPerfDetail(tr("性能分析失败：未获取到性能数据"));
+            }
+            // 立即恢复高性能模式 (释放内存，重新加载)
+            runner_.reinit(false);
+        }
         
         if (!inferenceOk) {
              // ... error handling ...
@@ -308,6 +353,7 @@ private:
     FramePacket m_pendingPacket;
     bool m_hasPending = false;
     bool m_isRunning = false;
+    bool m_profilingPending = false;
 };
 
 CameraPreviewDialog::CameraPreviewDialog(QWidget* parent)

@@ -9,6 +9,8 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QTextEdit>
+#include <QFont>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -70,11 +72,12 @@ PerformanceAnalyticsDialog::PerformanceAnalyticsDialog(QWidget* parent)
     initializeUi();
 
     PerformanceMonitor* monitor = PerformanceMonitor::instance();
-    connect(monitor,
-            &PerformanceMonitor::frameMetricsUpdated,
-            this,
-            &PerformanceAnalyticsDialog::onFrameMetricsUpdated,
-            Qt::QueuedConnection);
+    // 优化：断开高频信号连接，仅依赖定时器刷新，降低主线程负载
+    // connect(monitor,
+    //         &PerformanceMonitor::frameMetricsUpdated,
+    //         this,
+    //         &PerformanceAnalyticsDialog::onFrameMetricsUpdated,
+    //         Qt::QueuedConnection);
     connect(monitor,
             &PerformanceMonitor::resourceMetricsUpdated,
             this,
@@ -193,6 +196,42 @@ void PerformanceAnalyticsDialog::initializeUi() {
     
     resourceLayout->addWidget(toggleNpuDetailsBtn, row++, 0, 1, 2);
     resourceLayout->addWidget(npuDetailsWidget, row++, 0, 1, 2);
+
+    auto* analyzeNpuBtn = new QPushButton(tr("分析算子详情 (耗时较长)"), resourceGroup);
+    auto* npuPerfText = new QTextEdit(resourceGroup);
+    npuPerfText->setReadOnly(true);
+    npuPerfText->setFont(QFont("Monospace"));
+    npuPerfText->setMinimumHeight(150);
+    npuPerfText->setVisible(false);
+
+    resourceLayout->addWidget(analyzeNpuBtn, row++, 0, 1, 2);
+    resourceLayout->addWidget(npuPerfText, row++, 0, 1, 2);
+
+    connect(analyzeNpuBtn, &QPushButton::clicked, [this, analyzeNpuBtn, npuPerfText]() {
+        analyzeNpuBtn->setEnabled(false);
+        analyzeNpuBtn->setText(tr("正在分析..."));
+        npuPerfText->setVisible(true);
+        npuPerfText->setText(tr("正在重新加载模型并收集性能数据，请稍候..."));
+        PerformanceMonitor::instance()->requestProfiling();
+
+        // 增加超时保护，防止因摄像头未开启或后台无响应导致界面卡死
+        QTimer::singleShot(8000, this, [analyzeNpuBtn, npuPerfText]() {
+            if (!analyzeNpuBtn->isEnabled()) {
+                analyzeNpuBtn->setEnabled(true);
+                analyzeNpuBtn->setText(tr("分析算子详情 (耗时较长)"));
+                if (npuPerfText->toPlainText() == tr("正在重新加载模型并收集性能数据，请稍候...")) {
+                    npuPerfText->setText(tr("分析超时。\n请确保：\n1. 摄像头预览正在运行\n2. NPU 模型已正确加载\n3. 系统负载正常"));
+                }
+            }
+        });
+    });
+
+    connect(PerformanceMonitor::instance(), &PerformanceMonitor::npuPerfDetailUpdated,
+            this, [analyzeNpuBtn, npuPerfText](const QString& report) {
+        analyzeNpuBtn->setEnabled(true);
+        analyzeNpuBtn->setText(tr("分析算子详情 (耗时较长)"));
+        npuPerfText->setText(report);
+    });
 
     resourceLayout->addWidget(new QLabel(tr("GPU 利用率:"), resourceGroup), row, 0);
     resourceLayout->addWidget(m_gpuUtilLabel, row++, 1);

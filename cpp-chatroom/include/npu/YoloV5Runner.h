@@ -36,6 +36,7 @@ public:
     ~YoloV5Runner();
 
     bool loadModel(const QString &modelPath, QString *errorOut);
+    bool reinit(bool enableProfiling);
     bool isReady() const;
     int inputWidth() const;
     int inputHeight() const;
@@ -46,7 +47,8 @@ public:
                std::int64_t *inferenceTimeMs,
                cv::Mat *visualizedFrame,
                QString *errorOut,
-               InferenceBreakdown *breakdownOut = nullptr);
+               InferenceBreakdown *breakdownOut = nullptr,
+               QString *perfDetailOut = nullptr);
 
     bool inferFromRgbBuffer(const cv::Mat &originalFrameBgr,
                             int originalWidth,
@@ -58,7 +60,8 @@ public:
                             std::int64_t *inferenceTimeMs,
                             cv::Mat *visualizedFrame,
                             QString *errorOut,
-                            InferenceBreakdown *breakdownOut = nullptr);
+                            InferenceBreakdown *breakdownOut = nullptr,
+                            QString *perfDetailOut = nullptr);
 
     static bool runSample(const QString &modelPath,
                           const QString &inputImagePath,
@@ -77,13 +80,15 @@ private:
                               DetectResultGroup *group,
                               std::int64_t *inferenceTimeMs,
                               cv::Mat *visualizedFrame,
-                              InferenceBreakdown *breakdown);
+                              InferenceBreakdown *breakdown,
+                              QString *perfDetailOut);
     bool initializeInputMemory(QString &err);
     void releaseInputMemory();
     std::size_t inputBufferBytes() const;
 
     rknn_context ctx_;
     bool ready_;
+    QString m_currentModelPath;
     int inputWidth_;
     int inputHeight_;
     int inputChannel_;

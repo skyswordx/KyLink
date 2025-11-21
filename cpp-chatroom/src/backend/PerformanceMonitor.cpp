@@ -249,6 +249,14 @@ void PerformanceMonitor::setNpuContext(rknn_context context) {
                               Qt::QueuedConnection);
 }
 
+void PerformanceMonitor::requestProfiling() {
+    emit profilingRequested();
+}
+
+void PerformanceMonitor::submitNpuPerfDetail(const QString& report) {
+    emit npuPerfDetailUpdated(report);
+}
+
 void PerformanceMonitor::ensureNpuStaticInfo() {
     QMutexLocker locker(&m_npuInfoMutex);
 

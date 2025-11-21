@@ -84,10 +84,15 @@ public:
     ResourceSnapshot latestResourceSnapshot() const;
     void setNpuContext(rknn_context context);
 
+    void requestProfiling();
+    void submitNpuPerfDetail(const QString& report);
+
 signals:
     void frameMetricsUpdated(const PerformanceMonitor::FrameTimings& latest,
                              const QVector<PerformanceMonitor::FrameTimings>& history);
     void resourceMetricsUpdated(const PerformanceMonitor::ResourceSnapshot& snapshot);
+    void profilingRequested();
+    void npuPerfDetailUpdated(const QString& report);
 
 private slots:
     void sampleResourceUsage();

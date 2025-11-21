@@ -106,6 +106,7 @@ void YoloV5Runner::release() {
 }
 
 bool YoloV5Runner::loadModel(const QString &modelPath, QString *errorOut) {
+    m_currentModelPath = modelPath;
     QString dummyError;
     QString &err = errorOut ? *errorOut : dummyError;
     err.clear();
@@ -218,6 +219,75 @@ bool YoloV5Runner::loadModel(const QString &modelPath, QString *errorOut) {
     return true;
 }
 
+bool YoloV5Runner::reinit(bool enableProfiling) {
+    if (m_currentModelPath.isEmpty()) {
+        return false;
+    }
+
+    QString err;
+    std::vector<unsigned char> modelData;
+    if (!loadModelFile(m_currentModelPath, modelData, err)) {
+        qWarning() << "reinit loadModelFile failed:" << err;
+        return false;
+    }
+
+    release();
+
+    uint32_t flags = 0;
+    if (enableProfiling) {
+        flags |= RKNN_FLAG_COLLECT_PERF_MASK;
+    }
+
+    int ret = rknn_init(&ctx_, modelData.data(), modelData.size(), flags, nullptr);
+    if (ret < 0) {
+        qWarning() << "reinit rknn_init failed:" << ret;
+        release();
+        return false;
+    }
+
+    // Re-query necessary info
+    ret = rknn_query(ctx_, RKNN_QUERY_IN_OUT_NUM, &ioNum_, sizeof(ioNum_));
+    if (ret < 0) {
+        release();
+        return false;
+    }
+
+    // We assume model structure hasn't changed, but we need to re-query attrs if we use them or just rely on cached values?
+    // The cached values (inputWidth_, etc.) should be fine if the model file is the same.
+    // But inputAttrs_ and outputAttrs_ are used?
+    // inputAttrs_ is used in initializeInputMemory? No, initializeInputMemory uses inputWidth_ etc.
+    // But wait, initializeInputMemory uses rknn_create_mem or rknn_inputs_set?
+    // initializeInputMemory calls releaseInputMemory.
+    // runInferenceInternal uses rknn_inputs_set.
+    
+    // Let's just re-run the queries to be safe and consistent.
+    inputAttrs_.resize(ioNum_.n_input);
+    for (uint32_t i = 0; i < ioNum_.n_input; ++i) {
+        inputAttrs_[i].index = i;
+        rknn_query(ctx_, RKNN_QUERY_INPUT_ATTR, &inputAttrs_[i], sizeof(rknn_tensor_attr));
+    }
+
+    outputAttrs_.resize(ioNum_.n_output);
+    outputScales_.clear();
+    outputZps_.clear();
+    for (uint32_t i = 0; i < ioNum_.n_output; ++i) {
+        outputAttrs_[i].index = i;
+        rknn_query(ctx_, RKNN_QUERY_OUTPUT_ATTR, &outputAttrs_[i], sizeof(rknn_tensor_attr));
+        outputScales_.push_back(outputAttrs_[i].scale);
+        outputZps_.push_back(outputAttrs_[i].zp);
+    }
+
+    if (!initializeInputMemory(err)) {
+        ready_ = false;
+        release();
+        return false;
+    }
+
+    ready_ = true;
+    PerformanceMonitor::instance()->setNpuContext(ctx_);
+    return true;
+}
+
 bool YoloV5Runner::isReady() const {
     return ready_;
 }
@@ -239,7 +309,8 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
                          std::int64_t *inferenceTimeMs,
                          cv::Mat *visualizedFrame,
                          QString *errorOut,
-                         InferenceBreakdown *breakdownOut) {
+                         InferenceBreakdown *breakdownOut,
+                         QString *perfDetailOut) {
     QString dummyError;
     QString &err = errorOut ? *errorOut : dummyError;
     err.clear();
@@ -302,7 +373,8 @@ bool YoloV5Runner::infer(const cv::Mat &frameBgr,
                                 group,
                                 inferenceTimeMs,
                                 visualizedFrame,
-                                breakdown);
+                                breakdown,
+                                perfDetailOut);
 }
 
 bool YoloV5Runner::inferFromRgbBuffer(const cv::Mat &originalFrameBgr,
@@ -315,7 +387,8 @@ bool YoloV5Runner::inferFromRgbBuffer(const cv::Mat &originalFrameBgr,
                                       std::int64_t *inferenceTimeMs,
                                       cv::Mat *visualizedFrame,
                                       QString *errorOut,
-                                      InferenceBreakdown *breakdownOut) {
+                                      InferenceBreakdown *breakdownOut,
+                                      QString *perfDetailOut) {
     QString dummyError;
     QString &err = errorOut ? *errorOut : dummyError;
     err.clear();
@@ -365,7 +438,8 @@ bool YoloV5Runner::inferFromRgbBuffer(const cv::Mat &originalFrameBgr,
                                 group,
                                 inferenceTimeMs,
                                 visualizedFrame,
-                                breakdown);
+                                breakdown,
+                                perfDetailOut);
 }
 
 bool YoloV5Runner::runInferenceInternal(const cv::Mat &originalFrameBgr,
@@ -378,7 +452,8 @@ bool YoloV5Runner::runInferenceInternal(const cv::Mat &originalFrameBgr,
                                         DetectResultGroup *group,
                                         std::int64_t *inferenceTimeMs,
                                         cv::Mat *visualizedFrame,
-                                        InferenceBreakdown *breakdown) {
+                                        InferenceBreakdown *breakdown,
+                                        QString *perfDetailOut) {
     if (!inputBuffer) {
         err = QStringLiteral("输入缓冲区为空");
         return false;
@@ -418,6 +493,16 @@ bool YoloV5Runner::runInferenceInternal(const cv::Mat &originalFrameBgr,
     if (ret < 0) {
         err = QStringLiteral("获取输出失败, 错误码: %1").arg(ret);
         return false;
+    }
+
+    if (perfDetailOut) {
+        rknn_perf_detail perf_detail;
+        ret = rknn_query(ctx_, RKNN_QUERY_PERF_DETAIL, &perf_detail, sizeof(perf_detail));
+        if (ret == RKNN_SUCC) {
+            *perfDetailOut = QString::fromUtf8(perf_detail.perf_data, perf_detail.data_len);
+        } else {
+            *perfDetailOut = QStringLiteral("获取性能详情失败: %1").arg(ret);
+        }
     }
 
     const auto npuEnd = std::chrono::steady_clock::now();
