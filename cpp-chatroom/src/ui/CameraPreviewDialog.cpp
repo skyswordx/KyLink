@@ -129,6 +129,19 @@ public slots:
             captureToPreprocessUs = (preprocessStartNs - packet.captureTimestampNs) / 1000;
         }
 
+        // --- 关键优化：过时帧丢弃策略 ---
+        // 如果帧在队列中等待了超过 15ms (约半帧时间)，说明它已经"不新鲜"了。
+        // 处理它会导致最终显示的延迟增加。不如直接丢弃，等待下一帧刚刚到达的"热乎"数据。
+        // 这会实现 NPU 处理与摄像头采集的"相位锁定"，大幅降低排队延迟。
+        if (captureToPreprocessUs > 15000) { 
+            // 仅在 NPU 负载较高时启用此策略 (防止首帧被误杀)
+            // 这里简单起见直接启用，因为我们知道 NPU 是瓶颈
+            // qDebug() << "Dropping stale frame, latency:" << captureToPreprocessUs << "us";
+            emit workerReady(); 
+            return;
+        }
+        // --------------------------------
+
         if (!preprocessorReady_) {
             preprocessorReady_ = preprocessor_.initialize(runner_.inputWidth(), runner_.inputHeight());
             if (!preprocessorReady_) {
@@ -317,6 +330,8 @@ CameraPreviewDialog::CameraPreviewDialog(QWidget* parent)
     resize(720, 520);
 
     qRegisterMetaType<FramePacket>("FramePacket");
+    qRegisterMetaType<PerformanceMonitor::FrameTimings>("PerformanceMonitor::FrameTimings");
+    qRegisterMetaType<PerformanceMonitor::ResourceSnapshot>("PerformanceMonitor::ResourceSnapshot");
 
     initializeUi();
     populateDevices();
@@ -556,22 +571,36 @@ void CameraPreviewDialog::startPipelineForIndex(int index)
     GstElement* convert = gst_element_factory_make("videoconvert", "convert");
     GstElement* queue = gst_element_factory_make("queue", "queue");
     GstElement* capsfilter = gst_element_factory_make("capsfilter", "capsfilter");
+    GstElement* jpegparse = gst_element_factory_make("jpegparse", "jpegparse");
     GstElement* appsink = gst_element_factory_make("appsink", kAppsinkName);
 
-    if (!source || !convert || !queue || !capsfilter || !appsink) {
+    if (!source || !convert || !queue || !capsfilter || !jpegparse || !appsink) {
         updateStatusText(tr("无法创建 GStreamer 元件"));
         if (source) gst_object_unref(source);
         if (convert) gst_object_unref(convert);
         if (queue) gst_object_unref(queue);
         if (capsfilter) gst_object_unref(capsfilter);
+        if (jpegparse) gst_object_unref(jpegparse);
         if (appsink) gst_object_unref(appsink);
         return;
     }
 
-    g_object_set(queue, "leaky", kQueueLeakyDownstream, nullptr); // drop stale frames when UI lags
-    GstCaps* caps = gst_caps_from_string("video/x-raw,format=NV12");
+    g_object_set(queue, "leaky", kQueueLeakyDownstream, "max-size-buffers", 1, nullptr); // drop stale frames immediately
+    
+    // Use MJPEG + MPP hardware decoding for better performance and lower USB bandwidth
+    // Relax caps to allow negotiation (remove fixed framerate)
+    GstCaps* caps = gst_caps_from_string("image/jpeg,width=640,height=480");
     g_object_set(capsfilter, "caps", caps, nullptr);
     gst_caps_unref(caps);
+
+    // Create MPP decoder element
+    // GstElement* mppdec = gst_element_factory_make("mppvideodec", "mppdec"); // Moved to linking logic
+    
+    // Force NV12 format for appsink to ensure we use the RGA path
+    // and avoid the OpenCV BGR construction crash on non-BGR formats (like I420 from jpegdec).
+    GstCaps* appsinkCaps = gst_caps_from_string("video/x-raw, format=NV12");
+    gst_app_sink_set_caps(GST_APP_SINK(appsink), appsinkCaps);
+    gst_caps_unref(appsinkCaps);
 
     g_object_set(appsink, "emit-signals", FALSE, "sync", FALSE, "max-buffers", 1, "drop", TRUE, nullptr);
     GstAppSinkCallbacks callbacks = {nullptr, nullptr, &CameraPreviewDialog::onAppSinkNewSample};
@@ -584,17 +613,95 @@ void CameraPreviewDialog::startPipelineForIndex(int index)
         gst_object_unref(convert);
         gst_object_unref(queue);
         gst_object_unref(capsfilter);
+        if (jpegparse) gst_object_unref(jpegparse);
         gst_object_unref(appsink);
+        // if (mppdec) gst_object_unref(mppdec);
         return;
     }
 
-    gst_bin_add_many(GST_BIN(m_pipeline), source, queue, convert, capsfilter, appsink, nullptr);
-    const gboolean linked = gst_element_link_many(source, queue, convert, capsfilter, appsink, nullptr);
-    if (!linked) {
-        updateStatusText(tr("GStreamer 管线连接失败"));
+    // Add common elements
+    gst_bin_add_many(GST_BIN(m_pipeline), source, queue, capsfilter, convert, appsink, nullptr);
+    
+    // Link Source -> Queue -> CapsFilter
+    if (!gst_element_link_many(source, queue, capsfilter, nullptr)) {
+        updateStatusText(tr("无法连接摄像头源"));
         stopPipeline();
         return;
     }
+
+    // Try linking MPP path: CapsFilter -> JpegParse -> MppDec -> [Convert] -> AppSink
+    bool decoderLinked = false;
+    
+    // Prefer mppjpegdec for JPEG, fallback to mppvideodec
+    GstElement* hwDec = gst_element_factory_make("mppjpegdec", "hwdec");
+    if (!hwDec) {
+        hwDec = gst_element_factory_make("mppvideodec", "hwdec");
+    }
+
+    if (hwDec && jpegparse) {
+        gst_bin_add(GST_BIN(m_pipeline), hwDec);
+        gst_bin_add(GST_BIN(m_pipeline), jpegparse);
+
+        // 1. Link CapsFilter -> JpegParse -> HwDec
+        if (gst_element_link_many(capsfilter, jpegparse, hwDec, nullptr)) {
+            
+            // 2. Try linking HwDec -> AppSink (Direct, Zero-Copy for DMABuf)
+            if (gst_element_link(hwDec, appsink)) {
+                decoderLinked = true;
+                qDebug() << "MPP Hardware decoding pipeline linked (Direct Zero-Copy)";
+                // Remove unused convert
+                gst_bin_remove(GST_BIN(m_pipeline), convert);
+            } 
+            // 3. If direct fails, try HwDec -> Convert -> AppSink
+            else if (gst_element_link_many(hwDec, convert, appsink, nullptr)) {
+                decoderLinked = true;
+                qDebug() << "MPP Hardware decoding pipeline linked (via Convert)";
+            }
+        }
+        
+        if (!decoderLinked) {
+            qDebug() << "MPP linking failed, removing HW elements...";
+            gst_bin_remove(GST_BIN(m_pipeline), hwDec);
+            gst_bin_remove(GST_BIN(m_pipeline), jpegparse);
+            // Note: convert is still in bin if we didn't remove it yet, or we need to re-add it if we removed it?
+            // We only removed 'convert' in the success path above.
+            // But wait, 'convert' was added to bin in "Add common elements".
+            // If we are here, 'convert' is still in bin (unless we removed it in success path, which we didn't reach).
+        }
+    }
+
+    if (!decoderLinked) {
+        // Fallback to software jpegdec
+        // Ensure 'convert' is in the bin (it might be there, but let's be safe)
+        // gst_bin_add(GST_BIN(m_pipeline), convert); // It's already added at start
+        
+        GstElement* jpegdec = gst_element_factory_make("jpegdec", "jpegdec");
+        if (jpegdec) {
+            gst_bin_add(GST_BIN(m_pipeline), jpegdec);
+            // Note: jpegdec outputs I420, convert will handle I420 -> NV12 (for appsink)
+            if (gst_element_link_many(capsfilter, jpegdec, convert, appsink, nullptr)) {
+                decoderLinked = true;
+                updateStatusText(tr("警告: 使用软件解码 (MPP失败)"));
+            } else {
+                gst_bin_remove(GST_BIN(m_pipeline), jpegdec);
+            }
+        }
+    }
+
+    if (!decoderLinked) {
+        updateStatusText(tr("无法连接解码器 (MPP/JPEGDEC)"));
+        stopPipeline();
+        return;
+    }
+
+    // Link Convert -> AppSink (Only if software path used, or HW path used convert)
+    // Actually, the linking logic above already handles the connection to appsink.
+    // So we don't need a separate link step here.
+    
+    // Double check if appsink is linked
+    // GstPad* sinkPad = gst_element_get_static_pad(appsink, "sink");
+    // if (!gst_pad_is_linked(sinkPad)) { ... }
+    // gst_object_unref(sinkPad);
 
     m_appSink = appsink;
 
