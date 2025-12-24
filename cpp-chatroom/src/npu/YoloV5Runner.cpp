@@ -267,6 +267,17 @@ bool YoloV5Runner::reinit(bool enableProfiling) {
         rknn_query(ctx_, RKNN_QUERY_INPUT_ATTR, &inputAttrs_[i], sizeof(rknn_tensor_attr));
     }
 
+    // 从输入属性恢复维度信息（release()会将其重置为0）
+    if (!inputAttrs_.empty() && inputAttrs_[0].fmt == RKNN_TENSOR_NCHW) {
+        inputChannel_ = inputAttrs_[0].dims[1];
+        inputHeight_ = inputAttrs_[0].dims[2];
+        inputWidth_ = inputAttrs_[0].dims[3];
+    } else if (!inputAttrs_.empty()) {
+        inputHeight_ = inputAttrs_[0].dims[1];
+        inputWidth_ = inputAttrs_[0].dims[2];
+        inputChannel_ = inputAttrs_[0].dims[3];
+    }
+
     outputAttrs_.resize(ioNum_.n_output);
     outputScales_.clear();
     outputZps_.clear();
