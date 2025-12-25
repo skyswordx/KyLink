@@ -14,8 +14,10 @@
 class FeiqBackend;
 
 class MainWindow;
+#ifdef BUILD_RK3566
 class ScreenshotTool;
 class CameraPreviewDialog;
+#endif
 
 class ChatWindow : public QWidget
 {
@@ -47,9 +49,11 @@ private slots:
     void onSendClicked();
     void onFileClicked();
     void onEmojiClicked();
+#ifdef BUILD_RK3566
     void onScreenshotClicked();
     void onCameraClicked();
     void onScreenshotTaken(const QString& filePath);
+#endif
 
 private:
     void setupUI();
@@ -69,12 +73,12 @@ private:
     QPushButton* m_sendButton;
     QPushButton* m_fileButton;
     QPushButton* m_emojiButton;
+#ifdef BUILD_RK3566
     QPushButton* m_screenshotButton;
     QPushButton* m_cameraButton;
-    
     ScreenshotTool* m_screenshotTool;
     CameraPreviewDialog* m_cameraDialog;
+#endif
 };
 
 #endif // CHATWINDOW_H
-

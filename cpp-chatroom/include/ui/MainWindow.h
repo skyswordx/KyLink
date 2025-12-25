@@ -20,7 +20,9 @@ class ChatWindow;
 class SettingsDialog;
 class AboutDialog;
 class GroupChatDialog;
+#ifdef BUILD_RK3566
 class PerformanceAnalyticsDialog;
+#endif
 
 class MainWindow : public QMainWindow
 {
@@ -52,7 +54,9 @@ private slots:
     void onSendFileRequest(const QString& targetIp, const QString& filePath);
     void onSettingsClicked();
     void onAboutClicked();
+#ifdef BUILD_RK3566
     void onOpenPerformanceAnalytics();
+#endif
     
     // 供GroupChatDialog调用的公共方法
     void appendFileOfferToChat(const QString& targetIp, const FeiqFileOffer& offer,
@@ -80,11 +84,13 @@ private:
     // 菜单
     QMenu* m_fileMenu;
     QMenu* m_helpMenu;
+#ifdef BUILD_RK3566
     QMenu* m_performanceMenu;
+    QAction* m_openPerformanceAction;
+#endif
     QAction* m_settingsAction;
     QAction* m_exitAction;
     QAction* m_aboutAction;
-    QAction* m_openPerformanceAction;
     
     // 数据
     QString m_username;
@@ -94,8 +100,9 @@ private:
     FeiqBackend* m_backend;
     QMap<QString, FeiqFellowInfo> m_users;  // IP -> UserInfo
     QMap<QString, ChatWindow*> m_chatWindows;      // IP -> ChatWindow
+#ifdef BUILD_RK3566
     QPointer<PerformanceAnalyticsDialog> m_performanceDialog;
+#endif
 };
 
 #endif // MAINWINDOW_H
-

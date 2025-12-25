@@ -126,12 +126,22 @@ void FeiqCommu::onRecv(const string &ip, vector<char> &data)
     auto info = dumpVersionInfo(post->from->version());
     post->from->setMac(info.mac);
 
-    //屏蔽自己的包
-    if (mMac == post->from->getMac()//匹配mac
-        && mName == post->from->getName())//再匹配名字，以防mac获取失败
-    {
-        return;
+    //屏蔽自己的包 - MAC为空或全0时不依赖MAC判断
+    auto isValidMac = [](const std::string& mac) {
+        if (mac.empty()) return false;
+        for (char c : mac) {
+            if (c != '0') return true;
+        }
+        return false;
+    };
+    
+    bool isSelfPacket = false;
+    if (isValidMac(mMac) && isValidMac(post->from->getMac())) {
+        isSelfPacket = (mMac == post->from->getMac() && mName == post->from->getName());
     }
+    
+    if (isSelfPacket)
+        return;
 
     //除非收到下线包，否则都认为在线
     post->from->setOnLine(true);

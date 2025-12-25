@@ -4,9 +4,12 @@
 #include <QDir>
 #include <QStandardPaths>
 
+#include "ui/MainWindow.h"
+
+#ifdef BUILD_RK3566
 #include "backend/RgaSelfTest.h"
 #include "npu/YoloV5Runner.h"
-#include "ui/MainWindow.h"
+#endif
 
 int main(int argc, char* argv[])
 {
@@ -24,6 +27,7 @@ int main(int argc, char* argv[])
         dir.mkpath(".");
     }
     
+#ifdef BUILD_RK3566
     // 启动阶段执行一次 NPU 示例推理，验证驱动链路
     const QString assetDir = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("npu_assets"));
     const QString modelPath = QDir(assetDir).filePath(QStringLiteral("yolov5s_relu.rknn"));
@@ -40,6 +44,7 @@ int main(int argc, char* argv[])
     if (!diagnostics::runRgaSelfTest(&rgaError)) {
         qWarning().noquote() << QStringLiteral("RGA 自检失败: %1").arg(rgaError);
     }
+#endif
 
     // 创建并显示主窗口
     MainWindow mainWindow;
@@ -47,4 +52,3 @@ int main(int argc, char* argv[])
     
     return app.exec();
 }
-

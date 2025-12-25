@@ -1,7 +1,9 @@
 #include "ui/ChatWindow.h"
 #include "ui/MainWindow.h"
+#ifdef BUILD_RK3566
 #include "ui/ScreenshotTool.h"
 #include "ui/CameraPreviewDialog.h"
+#endif
 #include "backend/FeiqBackend.h"
 #include <QMessageBox>
 #include <QFileDialog>
@@ -69,10 +71,12 @@ ChatWindow::ChatWindow(const QString& ownUsername,
     , m_sendButton(nullptr)
     , m_fileButton(nullptr)
     , m_emojiButton(nullptr)
+#ifdef BUILD_RK3566
     , m_screenshotButton(nullptr)
     , m_cameraButton(nullptr)
     , m_screenshotTool(nullptr)
     , m_cameraDialog(nullptr)
+#endif
 {
     setWindowTitle(QStringLiteral("与 %1 聊天中").arg(displayNameOf(targetFellow)));
     setGeometry(300, 300, 500, 400);
@@ -100,12 +104,14 @@ void ChatWindow::setupUI()
     QHBoxLayout* toolbarLayout = new QHBoxLayout();
     m_fileButton = new QPushButton("发送文件/图片", this);
     m_emojiButton = new QPushButton("发送表情", this);
-    m_screenshotButton = new QPushButton("截图", this);
-    m_cameraButton = new QPushButton("打开摄像头", this);
     toolbarLayout->addWidget(m_fileButton);
     toolbarLayout->addWidget(m_emojiButton);
+#ifdef BUILD_RK3566
+    m_screenshotButton = new QPushButton("截图", this);
+    m_cameraButton = new QPushButton("打开摄像头", this);
     toolbarLayout->addWidget(m_screenshotButton);
     toolbarLayout->addWidget(m_cameraButton);
+#endif
     toolbarLayout->addStretch();
     layout->addLayout(toolbarLayout);
     
@@ -124,8 +130,10 @@ void ChatWindow::setupUI()
     connect(m_sendButton, &QPushButton::clicked, this, &ChatWindow::onSendClicked);
     connect(m_fileButton, &QPushButton::clicked, this, &ChatWindow::onFileClicked);
     connect(m_emojiButton, &QPushButton::clicked, this, &ChatWindow::onEmojiClicked);
+#ifdef BUILD_RK3566
     connect(m_screenshotButton, &QPushButton::clicked, this, &ChatWindow::onScreenshotClicked);
     connect(m_cameraButton, &QPushButton::clicked, this, &ChatWindow::onCameraClicked);
+#endif
     connect(closeButton, &QPushButton::clicked, this, &ChatWindow::close);
 }
 
@@ -229,6 +237,7 @@ void ChatWindow::onEmojiClicked()
     }
 }
 
+#ifdef BUILD_RK3566
 void ChatWindow::onScreenshotClicked()
 {
     // 在创建截图工具之前，先隐藏当前窗口
@@ -296,6 +305,7 @@ void ChatWindow::onScreenshotTaken(const QString& filePath)
     appendImage(filePath, m_ownUsername, true);
     emit sendFileRequest(m_targetIp, filePath);
 }
+#endif
 
 void ChatWindow::appendImage(const QString& imagePath, const QString& senderName, bool isOwn)
 {
@@ -319,9 +329,11 @@ void ChatWindow::appendImage(const QString& imagePath, const QString& senderName
 
 void ChatWindow::closeEvent(QCloseEvent* event)
 {
+#ifdef BUILD_RK3566
     if (m_cameraDialog) {
         m_cameraDialog->close();
     }
+#endif
     qDebug() << QString("关闭与 %1 的聊天窗口").arg(m_targetIp);
     event->accept();
 }
@@ -416,4 +428,3 @@ void ChatWindow::updateFellow(const FeiqFellowInfo& fellow)
     m_targetFellow = fellow;
     setWindowTitle(QStringLiteral("与 %1 聊天中").arg(displayNameOf(fellow)));
 }
-

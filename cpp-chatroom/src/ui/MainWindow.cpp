@@ -3,7 +3,9 @@
 #include "ui/SettingsDialog.h"
 #include "ui/AboutDialog.h"
 #include "ui/GroupChatDialog.h"
+#ifdef BUILD_RK3566
 #include "ui/PerformanceAnalyticsDialog.h"
+#endif
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -44,11 +46,13 @@ MainWindow::MainWindow(QWidget* parent)
     , m_groupMessageButton(nullptr)
     , m_fileMenu(nullptr)
     , m_helpMenu(nullptr)
+#ifdef BUILD_RK3566
     , m_performanceMenu(nullptr)
+    , m_openPerformanceAction(nullptr)
+#endif
     , m_settingsAction(nullptr)
     , m_exitAction(nullptr)
     , m_aboutAction(nullptr)
-    , m_openPerformanceAction(nullptr)
     , m_backend(new FeiqBackend(this))
 {
     loadSettings();
@@ -158,14 +162,18 @@ void MainWindow::setupMenuBar()
     m_aboutAction = new QAction("关于(&A)...", this);
     m_helpMenu->addAction(m_aboutAction);
 
+#ifdef BUILD_RK3566
     m_performanceMenu = menuBar()->addMenu(tr("性能分析(&P)"));
     m_openPerformanceAction = new QAction(tr("打开性能分析面板"), this);
     m_performanceMenu->addAction(m_openPerformanceAction);
+#endif
     
     connect(m_settingsAction, &QAction::triggered, this, &MainWindow::onSettingsClicked);
     connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
     connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAboutClicked);
+#ifdef BUILD_RK3566
     connect(m_openPerformanceAction, &QAction::triggered, this, &MainWindow::onOpenPerformanceAnalytics);
+#endif
 }
 
 void MainWindow::loadSettings()
@@ -507,6 +515,7 @@ void MainWindow::onAboutClicked()
     dialog->exec();
 }
 
+#ifdef BUILD_RK3566
 void MainWindow::onOpenPerformanceAnalytics()
 {
     if (!m_performanceDialog) {
@@ -521,6 +530,7 @@ void MainWindow::onOpenPerformanceAnalytics()
     m_performanceDialog->raise();
     m_performanceDialog->activateWindow();
 }
+#endif
 
 void MainWindow::appendTextToChat(const QString& targetIp, const QString& message,
                                   const QString& senderName, bool isOwn)
