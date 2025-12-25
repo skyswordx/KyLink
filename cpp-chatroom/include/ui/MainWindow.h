@@ -57,6 +57,9 @@ private slots:
 #ifdef BUILD_RK3566
     void onOpenPerformanceAnalytics();
 #endif
+#ifdef BUILD_DESKTOP
+    void onOpenVideoPlayer();
+#endif
     
     // 供GroupChatDialog调用的公共方法
     void appendFileOfferToChat(const QString& targetIp, const FeiqFileOffer& offer,
@@ -88,6 +91,10 @@ private:
     QMenu* m_performanceMenu;
     QAction* m_openPerformanceAction;
 #endif
+#ifdef BUILD_DESKTOP
+    QMenu* m_videoMenu;
+    QAction* m_openVideoPlayerAction;
+#endif
     QAction* m_settingsAction;
     QAction* m_exitAction;
     QAction* m_aboutAction;
@@ -103,6 +110,10 @@ private:
 #ifdef BUILD_RK3566
     QPointer<PerformanceAnalyticsDialog> m_performanceDialog;
 #endif
+#ifdef BUILD_DESKTOP
+    QPointer<class VideoPlayerDialog> m_videoPlayerDialog;
+#endif
 };
 
 #endif // MAINWINDOW_H
+

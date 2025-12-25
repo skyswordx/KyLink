@@ -110,7 +110,7 @@ include_directories(
 # =============================================================================
 # 源文件
 # =============================================================================
-# 通用源文件
+# 通用源文件 (两个平台都编译)
 set(COMMON_SOURCES
     src/app/main.cpp
     src/backend/FeiqBackend.cpp
@@ -119,6 +119,7 @@ set(COMMON_SOURCES
     src/ui/GroupChatDialog.cpp
     src/ui/MainWindow.cpp
     src/ui/SettingsDialog.cpp
+    src/video/VideoFrame.cpp
 )
 
 set(COMMON_HEADERS
@@ -129,9 +130,10 @@ set(COMMON_HEADERS
     include/ui/GroupChatDialog.h
     include/ui/MainWindow.h
     include/ui/SettingsDialog.h
+    include/video/VideoFrame.h
 )
 
-# RK3566 特有源文件
+# RK3566 特有源文件 (发送端)
 set(RK3566_SOURCES
     src/backend/RgaSelfTest.cpp
     src/backend/PerformanceMonitor.cpp
@@ -141,6 +143,7 @@ set(RK3566_SOURCES
     src/ui/CameraPreviewDialog.cpp
     src/ui/PerformanceAnalyticsDialog.cpp
     src/ui/ScreenshotTool.cpp
+    src/video/VideoStreamer.cpp
 )
 
 set(RK3566_HEADERS
@@ -152,6 +155,18 @@ set(RK3566_HEADERS
     include/ui/CameraPreviewDialog.h
     include/ui/PerformanceAnalyticsDialog.h
     include/ui/ScreenshotTool.h
+    include/video/VideoStreamer.h
+)
+
+# 桌面特有源文件 (接收端)
+set(DESKTOP_SOURCES
+    src/video/VideoReceiver.cpp
+    src/ui/VideoPlayerDialog.cpp
+)
+
+set(DESKTOP_HEADERS
+    include/video/VideoReceiver.h
+    include/ui/VideoPlayerDialog.h
 )
 
 # 根据平台选择源文件
@@ -159,8 +174,8 @@ if(BUILD_RK3566)
     set(SOURCES ${COMMON_SOURCES} ${RK3566_SOURCES})
     set(HEADERS ${COMMON_HEADERS} ${RK3566_HEADERS})
 else()
-    set(SOURCES ${COMMON_SOURCES})
-    set(HEADERS ${COMMON_HEADERS})
+    set(SOURCES ${COMMON_SOURCES} ${DESKTOP_SOURCES})
+    set(HEADERS ${COMMON_HEADERS} ${DESKTOP_HEADERS})
 endif()
 
 # UI 文件

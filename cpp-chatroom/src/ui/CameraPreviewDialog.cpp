@@ -3,6 +3,7 @@
 #include "backend/PerformanceMonitor.h"
 #include "npu/RgaPreprocessor.h"
 #include "npu/YoloV5Runner.h"
+#include "video/VideoStreamer.h"
 
 #include <QCloseEvent>
 #include <QComboBox>
@@ -23,6 +24,8 @@
 #include <QPen>
 #include <QFont>
 #include <QFontMetrics>
+#include <QLineEdit>
+#include <QBuffer>
 
 #include <atomic>
 #include <chrono>
@@ -370,10 +373,15 @@ CameraPreviewDialog::CameraPreviewDialog(QWidget* parent)
     , m_processingFrame(false)
     , m_detectionThread(nullptr)
     , m_detectionWorker(nullptr)
+    , m_streamTargetEdit(nullptr)
+    , m_streamButton(nullptr)
+    , m_streamStatusLabel(nullptr)
+    , m_videoStreamer(nullptr)
+    , m_isStreaming(false)
 {
     setWindowTitle(tr("摄像头预览"));
     setAttribute(Qt::WA_DeleteOnClose);
-    resize(720, 520);
+    resize(720, 580);
 
     qRegisterMetaType<FramePacket>("FramePacket");
     qRegisterMetaType<PerformanceMonitor::FrameTimings>("PerformanceMonitor::FrameTimings");
@@ -386,6 +394,11 @@ CameraPreviewDialog::CameraPreviewDialog(QWidget* parent)
 
 CameraPreviewDialog::~CameraPreviewDialog()
 {
+    if (m_videoStreamer) {
+        m_videoStreamer->stopStreaming();
+        delete m_videoStreamer;
+        m_videoStreamer = nullptr;
+    }
     stopPipeline();
     clearDevices();
     disposeDetectionWorker();
@@ -424,8 +437,22 @@ void CameraPreviewDialog::initializeUi()
 
     m_statusLabel = new QLabel(tr("正在初始化摄像头列表..."), this);
 
+    // 视频推流控制
+    auto* streamLayout = new QHBoxLayout();
+    auto* streamLabel = new QLabel(tr("推流目标IP:"), this);
+    m_streamTargetEdit = new QLineEdit(this);
+    m_streamTargetEdit->setPlaceholderText(tr("例如: 192.168.1.100"));
+    m_streamButton = new QPushButton(tr("开始推流"), this);
+    m_streamStatusLabel = new QLabel(tr("未推流"), this);
+    
+    streamLayout->addWidget(streamLabel);
+    streamLayout->addWidget(m_streamTargetEdit, 1);
+    streamLayout->addWidget(m_streamButton);
+    streamLayout->addWidget(m_streamStatusLabel);
+
     mainLayout->addLayout(controlsLayout);
     mainLayout->addWidget(m_videoLabel, 1);
+    mainLayout->addLayout(streamLayout);
     mainLayout->addWidget(m_statusLabel);
 
     m_busPollTimer = new QTimer(this);
@@ -437,6 +464,8 @@ void CameraPreviewDialog::initializeUi()
             this, &CameraPreviewDialog::onStartStopClicked);
     connect(m_busPollTimer, &QTimer::timeout,
             this, &CameraPreviewDialog::processBusMessages);
+    connect(m_streamButton, &QPushButton::clicked,
+            this, &CameraPreviewDialog::onStreamClicked);
 }
 
 void CameraPreviewDialog::populateDevices()
@@ -927,6 +956,9 @@ void CameraPreviewDialog::onInferenceFrameReady(quint64 frameId, const QImage& i
 
     updateStatusText(tr("预览中 - 目标 %1, 推理 %2 ms").arg(objectCount).arg(inferenceTimeMs));
 
+    // 如果正在推流，发送当前帧
+    sendFrameToStream(image);
+
     const auto renderEnd = std::chrono::steady_clock::now();
     const qint64 renderDurationUs = std::chrono::duration_cast<std::chrono::microseconds>(renderEnd - renderStart).count();
     const qint64 renderCompleteNs = std::chrono::duration_cast<std::chrono::nanoseconds>(renderEnd.time_since_epoch()).count();
@@ -1064,5 +1096,96 @@ GstFlowReturn CameraPreviewDialog::onAppSinkNewSample(GstAppSink* sink, gpointer
     return GST_FLOW_OK;
 }
 
-#include "CameraPreviewDialog.moc"
+// ============================================================================
+// 视频推流功能
+// ============================================================================
 
+void CameraPreviewDialog::onStreamClicked()
+{
+    if (m_isStreaming) {
+        // 停止推流
+        if (m_videoStreamer) {
+            m_videoStreamer->stopStreaming();
+        }
+    } else {
+        // 开始推流
+        QString targetIp = m_streamTargetEdit->text().trimmed();
+        if (targetIp.isEmpty()) {
+            updateStatusText(tr("请输入推流目标IP地址"));
+            return;
+        }
+        
+        if (!m_videoStreamer) {
+            m_videoStreamer = new VideoStreamer(this);
+            connect(m_videoStreamer, &VideoStreamer::streamingStarted,
+                    this, &CameraPreviewDialog::onStreamingStarted);
+            connect(m_videoStreamer, &VideoStreamer::streamingStopped,
+                    this, &CameraPreviewDialog::onStreamingStopped);
+            connect(m_videoStreamer, &VideoStreamer::frameSent,
+                    this, &CameraPreviewDialog::onFrameSent);
+            connect(m_videoStreamer, &VideoStreamer::sendError,
+                    this, &CameraPreviewDialog::onStreamError);
+        }
+        
+        if (!m_videoStreamer->startStreaming(targetIp)) {
+            updateStatusText(tr("无法开始推流"));
+            return;
+        }
+    }
+}
+
+void CameraPreviewDialog::onStreamingStarted(const QString& targetIp)
+{
+    m_isStreaming = true;
+    m_streamButton->setText(tr("停止推流"));
+    m_streamTargetEdit->setEnabled(false);
+    m_streamStatusLabel->setText(tr("推流中: %1").arg(targetIp));
+    m_streamStatusLabel->setStyleSheet("color: green;");
+    updateStatusText(tr("开始向 %1 推送视频流").arg(targetIp));
+}
+
+void CameraPreviewDialog::onStreamingStopped()
+{
+    m_isStreaming = false;
+    m_streamButton->setText(tr("开始推流"));
+    m_streamTargetEdit->setEnabled(true);
+    m_streamStatusLabel->setText(tr("未推流"));
+    m_streamStatusLabel->setStyleSheet("");
+    updateStatusText(tr("视频推流已停止"));
+}
+
+void CameraPreviewDialog::onFrameSent(uint32_t frameId, int chunks)
+{
+    Q_UNUSED(frameId);
+    Q_UNUSED(chunks);
+    // 可选：更新推流统计
+}
+
+void CameraPreviewDialog::onStreamError(const QString& error)
+{
+    updateStatusText(tr("推流错误: %1").arg(error));
+}
+
+void CameraPreviewDialog::sendFrameToStream(const QImage& image)
+{
+    if (!m_isStreaming || !m_videoStreamer || image.isNull()) {
+        return;
+    }
+    
+    // 将 QImage 编码为 JPEG
+    QByteArray jpegData;
+    QBuffer buffer(&jpegData);
+    buffer.open(QIODevice::WriteOnly);
+    if (!image.save(&buffer, "JPEG", 80)) { // 80% 质量
+        return;
+    }
+    
+    // 发送到视频流
+    std::vector<uint8_t> data(jpegData.constData(), 
+                               jpegData.constData() + jpegData.size());
+    m_videoStreamer->sendFrame(data, 
+                                static_cast<uint16_t>(image.width()),
+                                static_cast<uint16_t>(image.height()));
+}
+
+#include "CameraPreviewDialog.moc"

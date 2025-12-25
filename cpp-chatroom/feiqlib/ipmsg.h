@@ -136,4 +136,22 @@
 #define IS_CMD_SET(cmd, test) (((cmd) & 0xFF) == test)
 #define IS_OPT_SET(cmd, opt) (((cmd) & opt) == opt)
 
+// ============================================================================
+// 视频流扩展协议 (自定义扩展，不与标准飞秋协议冲突)
+// ============================================================================
+#define IPMSG_VIDEO_PORT 2426           // 视频流专用UDP端口
+
+// 视频流控制命令 (通过标准UDP 2425端口发送)
+#define IPMSG_VIDEO_OFFER   0x000000e0  // 请求开始视频推流
+#define IPMSG_VIDEO_ACCEPT  0x000000e1  // 接受视频推流
+#define IPMSG_VIDEO_REJECT  0x000000e2  // 拒绝视频推流
+#define IPMSG_VIDEO_STOP    0x000000e3  // 停止视频推流
+
+// 视频帧数据包魔数 (用于UDP 2426端口的帧数据)
+#define VIDEO_FRAME_MAGIC   0x56464551  // "VFEQ" (Video FeiQ)
+
+// 视频帧分包参数
+#define VIDEO_MAX_CHUNK_SIZE 1400       // 单个UDP包最大载荷
+#define VIDEO_FRAME_TIMEOUT_MS 100      // 帧重组超时时间
+
 #endif // IPMSG_H

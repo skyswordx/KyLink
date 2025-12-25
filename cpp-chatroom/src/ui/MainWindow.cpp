@@ -6,6 +6,9 @@
 #ifdef BUILD_RK3566
 #include "ui/PerformanceAnalyticsDialog.h"
 #endif
+#ifdef BUILD_DESKTOP
+#include "ui/VideoPlayerDialog.h"
+#endif
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -49,6 +52,10 @@ MainWindow::MainWindow(QWidget* parent)
 #ifdef BUILD_RK3566
     , m_performanceMenu(nullptr)
     , m_openPerformanceAction(nullptr)
+#endif
+#ifdef BUILD_DESKTOP
+    , m_videoMenu(nullptr)
+    , m_openVideoPlayerAction(nullptr)
 #endif
     , m_settingsAction(nullptr)
     , m_exitAction(nullptr)
@@ -167,12 +174,21 @@ void MainWindow::setupMenuBar()
     m_openPerformanceAction = new QAction(tr("打开性能分析面板"), this);
     m_performanceMenu->addAction(m_openPerformanceAction);
 #endif
+
+#ifdef BUILD_DESKTOP
+    m_videoMenu = menuBar()->addMenu(tr("视频(&V)"));
+    m_openVideoPlayerAction = new QAction(tr("打开视频接收窗口"), this);
+    m_videoMenu->addAction(m_openVideoPlayerAction);
+#endif
     
     connect(m_settingsAction, &QAction::triggered, this, &MainWindow::onSettingsClicked);
     connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
     connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAboutClicked);
 #ifdef BUILD_RK3566
     connect(m_openPerformanceAction, &QAction::triggered, this, &MainWindow::onOpenPerformanceAnalytics);
+#endif
+#ifdef BUILD_DESKTOP
+    connect(m_openVideoPlayerAction, &QAction::triggered, this, &MainWindow::onOpenVideoPlayer);
 #endif
 }
 
@@ -617,3 +633,19 @@ void MainWindow::ensureChatWindowSignals(ChatWindow* chatWindow)
     });
 }
 
+#ifdef BUILD_DESKTOP
+void MainWindow::onOpenVideoPlayer()
+{
+    if (!m_videoPlayerDialog) {
+        m_videoPlayerDialog = new VideoPlayerDialog(this);
+        m_videoPlayerDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(m_videoPlayerDialog.data(), &QObject::destroyed, this, [this]() {
+            m_videoPlayerDialog = nullptr;
+        });
+    }
+
+    m_videoPlayerDialog->show();
+    m_videoPlayerDialog->raise();
+    m_videoPlayerDialog->activateWindow();
+}
+#endif

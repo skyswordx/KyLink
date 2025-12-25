@@ -22,10 +22,12 @@ typedef struct _GstAppSink GstAppSink;
 class QLabel;
 class QComboBox;
 class QPushButton;
+class QLineEdit;
 class QTimer;
 class QCloseEvent;
 class QResizeEvent;
 class QThread;
+class VideoStreamer;
 
 struct FramePacket {
     quint64 frameId = 0;
@@ -71,6 +73,13 @@ private slots:
     void processBusMessages();
     void onInferenceFrameReady(quint64 frameId, const QImage& image, int objectCount, qint64 inferenceTimeMs);
     void onInferenceError(const QString& errorText);
+    
+    // 视频推流槽
+    void onStreamClicked();
+    void onStreamingStarted(const QString& targetIp);
+    void onStreamingStopped();
+    void onFrameSent(uint32_t frameId, int chunks);
+    void onStreamError(const QString& error);
 
 private:
     void initializeUi();
@@ -88,6 +97,9 @@ private:
     void updateDisplayedPixmap();
     void handleNewFrame(const FramePacket& packet);
     static GstFlowReturn onAppSinkNewSample(GstAppSink* sink, gpointer userData);
+    
+    // 发送当前帧到视频流
+    void sendFrameToStream(const QImage& image);
 
     struct VideoDevice {
         QString label;
@@ -110,6 +122,14 @@ private:
     QThread* m_detectionThread;
     DetectionWorker* m_detectionWorker;
     QPixmap m_currentPixmap;
+    
+    // 视频推流
+    QLineEdit* m_streamTargetEdit;
+    QPushButton* m_streamButton;
+    QLabel* m_streamStatusLabel;
+    VideoStreamer* m_videoStreamer;
+    bool m_isStreaming;
 };
 
 #endif // CAMERAPREVIEWDIALOG_H
+
