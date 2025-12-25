@@ -25,6 +25,9 @@ public:
     void stop();
     bool isRunning() const { return m_running; }
 
+    // 启用定期用户发现广播（秒）
+    void enableIntervalDetect(int seconds = 10);
+
     QList<FeiqFellowInfo> fellows() const;
 
     bool sendText(const QString& ip, const QString& text, const QString& format = QString(), QString* error = nullptr);

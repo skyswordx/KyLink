@@ -86,6 +86,13 @@ void FeiqBackend::stop()
     m_running = false;
 }
 
+void FeiqBackend::enableIntervalDetect(int seconds)
+{
+    if (m_running) {
+        m_engine.enableIntervalDetect(seconds);
+    }
+}
+
 QList<FeiqFellowInfo> FeiqBackend::fellows() const
 {
     QList<FeiqFellowInfo> list;

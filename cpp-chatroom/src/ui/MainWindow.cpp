@@ -17,6 +17,7 @@
 #include <QDebug>
 #include <QSettings>
 #include <QDateTime>
+#include <QNetworkInterface>
 #include <algorithm>
 
 namespace
@@ -56,6 +57,30 @@ MainWindow::MainWindow(QWidget* parent)
     setupMenuBar();
 
     m_backend->setIdentity(m_username, m_hostname);
+
+    // 自动获取所有网络接口的广播地址
+    QStringList broadcastAddresses;
+    const auto interfaces = QNetworkInterface::allInterfaces();
+    for (const auto& iface : interfaces) {
+        if (iface.flags().testFlag(QNetworkInterface::IsUp) &&
+            iface.flags().testFlag(QNetworkInterface::IsRunning) &&
+            !iface.flags().testFlag(QNetworkInterface::IsLoopBack)) {
+            for (const auto& entry : iface.addressEntries()) {
+                if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol &&
+                    !entry.broadcast().isNull()) {
+                    QString broadcast = entry.broadcast().toString();
+                    if (!broadcastAddresses.contains(broadcast)) {
+                        broadcastAddresses.append(broadcast);
+                        qDebug() << "添加广播地址:" << broadcast << "来自接口" << iface.humanReadableName();
+                    }
+                }
+            }
+        }
+    }
+    if (!broadcastAddresses.isEmpty()) {
+        m_backend->setBroadcastAddresses(broadcastAddresses);
+    }
+
     setupConnections();
 
     if (!m_backend->start()) {
@@ -63,6 +88,8 @@ MainWindow::MainWindow(QWidget* parent)
     } else {
         m_statusLabel->setText(tr("在线用户: %1").arg(m_users.size()));
         m_backend->enableLoopbackTestUser();
+        // 启用每10秒定期广播，确保无线网络下用户发现稳定
+        m_backend->enableIntervalDetect(10);
     }
 }
 
