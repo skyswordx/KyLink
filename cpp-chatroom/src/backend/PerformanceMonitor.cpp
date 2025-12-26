@@ -2,6 +2,7 @@
 
 #include <QtCore/QByteArray>
 #include <QtCore/QDebug>
+#include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QMetaObject>
@@ -104,7 +105,8 @@ PerformanceMonitor::PerformanceMonitor(QObject* parent)
     , m_npuContext(0)
     , m_lastProcessTicks(0)
     , m_lastTotalTicks(0)
-    , m_lastActiveTicks(0) {
+    , m_lastActiveTicks(0)
+    , m_pendingProfilingInferences(0) {
 
     connect(&m_resourceTimer, &QTimer::timeout, this, &PerformanceMonitor::sampleResourceUsage);
     m_resourceTimer.setInterval(kResourceSampleIntervalMs);
@@ -254,6 +256,23 @@ void PerformanceMonitor::requestProfiling() {
 }
 
 void PerformanceMonitor::submitNpuPerfDetail(const QString& report) {
+    {
+        QMutexLocker locker(&m_npuMutex);
+        if (m_pendingProfilingInferences > 0) {
+            m_npuPerfReports.append(report);
+            m_pendingProfilingInferences--;
+            
+            // Request profiling for next inference if needed
+            if (m_pendingProfilingInferences > 0) {
+                locker.unlock();
+                requestProfiling();
+                emit npuPerfDetailUpdated(report);
+                return;
+            }
+        }
+    }
+    
+    // Always emit the updated report
     emit npuPerfDetailUpdated(report);
 }
 
@@ -721,4 +740,266 @@ double PerformanceMonitor::ticksToPercent(quint64 deltaTicks, quint64 deltaTotal
     const double percent = (static_cast<double>(deltaTicks) / static_cast<double>(deltaTotalTicks)) * 100.0;
     // percent already reflects share across all CPUs; clamp to [0, 100].
     return std::clamp(percent, 0.0, 100.0);
+}
+
+void PerformanceMonitor::triggerNpuProfiling(int numInferences) {
+    QMutexLocker locker(&m_npuMutex);
+    m_pendingProfilingInferences = numInferences;
+    m_npuPerfReports.clear();
+    m_npuPerfReports.reserve(numInferences);
+    
+    locker.unlock();
+    
+    // Request profiling for the first inference
+    if (numInferences > 0) {
+        requestProfiling();
+    }
+}
+
+QString PerformanceMonitor::captureSnapshot(const QString& baseDirectory) {
+    // Generate timestamp for filename
+    const QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
+    const QString filename = QStringLiteral("performance_snapshot_%1.log").arg(timestamp);
+    
+    // Determine save directory
+    QString savePath;
+    if (!baseDirectory.isEmpty()) {
+        savePath = baseDirectory + QStringLiteral("/") + filename;
+    } else {
+        // Try current directory first
+        savePath = filename;
+        QFile testFile(savePath);
+        if (!testFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            // Fallback to user directory
+            const QString homeDir = QDir::homePath();
+            const QString logDir = homeDir + QStringLiteral("/.feiqchatroom/logs");
+            QDir().mkpath(logDir);
+            savePath = logDir + QStringLiteral("/") + filename;
+        } else {
+            testFile.close();
+            testFile.remove();
+        }
+    }
+    
+    // Generate snapshot content
+    const QString content = generateSnapshotContent();
+    
+    // Write to file
+    QFile file(savePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        qWarning() << "Failed to open file for writing:" << savePath;
+        return QString();
+    }
+    
+    QTextStream stream(&file);
+    stream << content;
+    file.close();
+    
+    return savePath;
+}
+
+QString PerformanceMonitor::generateSnapshotContent() const {
+    QString content;
+    QTextStream out(&content);
+    
+    const ResourceSnapshot resources = latestResourceSnapshot();
+    const QVector<FrameTimings> frames = recentFrameHistory(5);
+    
+    out << "================================================================================\n";
+    out << "性能快照报告\n";
+    out << "================================================================================\n";
+    out << "快照时间: " << QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) << "\n";
+    out << "程序版本: " << getVersionInfo() << "\n";
+    out << "系统信息: " << getSystemInfo() << "\n";
+    out << "================================================================================\n\n";
+    
+    out << "[系统资源占用]\n";
+    out << QString("进程 CPU:     %1%\n").arg(resources.processCpuPercent, 0, 'f', 1);
+    out << QString("系统 CPU:     %1%\n").arg(resources.totalCpuPercent, 0, 'f', 1);
+    out << QString("进程内存:     %1 KB (%2 MB)\n")
+        .arg(resources.processMemoryKb)
+        .arg(resources.processMemoryKb / 1024.0, 0, 'f', 1);
+    out << QString("系统可用内存: %1 KB (%2 MB)\n\n")
+        .arg(resources.systemAvailableMemoryKb)
+        .arg(resources.systemAvailableMemoryKb / 1024.0, 0, 'f', 1);
+    
+    out << "[NPU 信息]\n";
+    if (resources.npuLoad.available) {
+        out << QString("利用率:       %1%\n").arg(resources.npuLoad.value, 0, 'f', 1);
+    } else {
+        out << QString("利用率:       不可用 (%1)\n").arg(resources.npuLoad.detail);
+    }
+    out << "频率:         " << (resources.npuFrequency.isEmpty() ? "N/A" : resources.npuFrequency) << "\n";
+    out << "电压:         " << (resources.npuVoltage.isEmpty() ? "N/A" : resources.npuVoltage) << "\n";
+    out << "功率状态:     " << (resources.npuPowerState.isEmpty() ? "N/A" : resources.npuPowerState) << "\n";
+    out << "延迟:         " << (resources.npuDelayMs.isEmpty() ? "N/A" : resources.npuDelayMs) << "\n";
+    out << "驱动版本:     " << (resources.npuDriverVersion.isEmpty() ? "N/A" : resources.npuDriverVersion) << "\n\n";
+    
+    out << "[NPU 内存占用]\n";
+    if (resources.npuMemory.available) {
+        out << QString("模型权重:     %1 KB (%2 MB)\n")
+            .arg(resources.npuMemory.modelWeightsKb)
+            .arg(resources.npuMemory.modelWeightsKb / 1024.0, 0, 'f', 1);
+        out << QString("内部缓冲区:   %1 KB (%2 MB)\n")
+            .arg(resources.npuMemory.internalBuffersKb)
+            .arg(resources.npuMemory.internalBuffersKb / 1024.0, 0, 'f', 1);
+        out << QString("DMA 分配:     %1 KB (%2 MB)\n")
+            .arg(resources.npuMemory.dmaAllocatedKb)
+            .arg(resources.npuMemory.dmaAllocatedKb / 1024.0, 0, 'f', 1);
+        out << QString("总 SRAM:      %1 KB (%2 MB)\n")
+            .arg(resources.npuMemory.totalSramKb)
+            .arg(resources.npuMemory.totalSramKb / 1024.0, 0, 'f', 1);
+        out << QString("可用 SRAM:    %1 KB (%2 MB)\n\n")
+            .arg(resources.npuMemory.freeSramKb)
+            .arg(resources.npuMemory.freeSramKb / 1024.0, 0, 'f', 1);
+    } else {
+        out << QString("不可用: %1\n\n").arg(resources.npuMemory.detail);
+    }
+    
+    out << "[RGA 信息]\n";
+    if (resources.rgaLoad.available) {
+        out << QString("利用率:       %1%\n").arg(resources.rgaLoad.value, 0, 'f', 1);
+        if (!resources.rgaCoreLoads.isEmpty()) {
+            out << "核心负载:\n";
+            for (const auto& pair : resources.rgaCoreLoads) {
+                out << QString("  %1: %2%\n").arg(pair.first).arg(pair.second, 0, 'f', 1);
+            }
+        }
+    } else {
+        out << QString("利用率:       不可用 (%1)\n").arg(resources.rgaLoad.detail);
+    }
+    out << "驱动版本:     " << (resources.rgaDriverVersion.isEmpty() ? "N/A" : resources.rgaDriverVersion) << "\n";
+    out << "硬件信息:     " << (resources.rgaHardwareInfo.isEmpty() ? "N/A" : resources.rgaHardwareInfo) << "\n\n";
+    
+    out << "[GPU 信息]\n";
+    if (resources.gpuLoad.available) {
+        out << QString("利用率:       %1%\n\n").arg(resources.gpuLoad.value, 0, 'f', 1);
+    } else {
+        out << QString("利用率:       不可用 (%1)\n\n").arg(resources.gpuLoad.detail);
+    }
+    
+    out << "[VPU/MPP 信息]\n";
+    out << "状态:         待实现\n\n";
+    
+    out << "[帧处理性能 - 最近 5 帧]\n";
+    out << "-------------------------\n";
+    out << QString("%1 | %2 | %3 | %4 | %5 | %6 | %7\n")
+        .arg("帧ID", -6).arg("采集延迟(μs)", -13).arg("预处理(μs)", -11)
+        .arg("NPU(μs)", -8).arg("后处理(μs)", -11).arg("渲染(μs)", -9).arg("总延迟(μs)", -12);
+    out << QString("%1-|-%2-|-%3-|-%4-|-%5-|-%6-|-%7\n")
+        .arg(QString(6, '-')).arg(QString(13, '-')).arg(QString(11, '-'))
+        .arg(QString(8, '-')).arg(QString(11, '-')).arg(QString(9, '-')).arg(QString(12, '-'));
+    
+    for (const auto& frame : frames) {
+        out << QString("%1 | %2 | %3 | %4 | %5 | %6 | %7\n")
+            .arg(frame.frameId, 6).arg(frame.captureToPreprocessUs, 13).arg(frame.preprocessUs, 11)
+            .arg(frame.npuUs, 8).arg(frame.postprocessUs, 11).arg(frame.renderUs, 9).arg(frame.totalLatencyUs, 12);
+    }
+    out << "\n";
+    
+    if (!frames.isEmpty()) {
+        const LatencyStats stats = calculateLatencyStats(frames);
+        out << "[延迟统计]\n";
+        out << QString("平均延迟: %1 μs (%2 ms)\n").arg(stats.avgUs, 0, 'f', 0).arg(stats.avgUs / 1000.0, 0, 'f', 1);
+        out << QString("最小延迟: %1 μs (%2 ms)\n").arg(stats.minUs, 0, 'f', 0).arg(stats.minUs / 1000.0, 0, 'f', 1);
+        out << QString("最大延迟: %1 μs (%2 ms)\n").arg(stats.maxUs, 0, 'f', 0).arg(stats.maxUs / 1000.0, 0, 'f', 1);
+        out << QString("P50 延迟: %1 μs (%2 ms)\n").arg(stats.p50Us, 0, 'f', 0).arg(stats.p50Us / 1000.0, 0, 'f', 1);
+        out << QString("P95 延迟: %1 μs (%2 ms)\n").arg(stats.p95Us, 0, 'f', 0).arg(stats.p95Us / 1000.0, 0, 'f', 1);
+        out << QString("P99 延迟: %1 μs (%2 ms)\n\n").arg(stats.p99Us, 0, 'f', 0).arg(stats.p99Us / 1000.0, 0, 'f', 1);
+    }
+    
+    {
+        QMutexLocker locker(&m_npuMutex);
+        if (!m_npuPerfReports.isEmpty()) {
+            out << "[NPU 算子级性能分析 - " << m_npuPerfReports.size() << " 次推理]\n";
+            out << "================================================================================\n";
+            for (int i = 0; i < m_npuPerfReports.size(); ++i) {
+                out << "\n推理 #" << (i + 1) << ":\n" << m_npuPerfReports.at(i) << "\n";
+                if (i < m_npuPerfReports.size() - 1) {
+                    out << "--------------------------------------------------------------------------------\n";
+                }
+            }
+            out << "================================================================================\n\n";
+        }
+    }
+    
+    out << "================================================================================\n";
+    out << "快照结束\n";
+    out << "================================================================================\n";
+    
+    return content;
+}
+
+QString PerformanceMonitor::getVersionInfo() const {
+    return QStringLiteral("FeiQ Chatroom v1.0.0");
+}
+
+QString PerformanceMonitor::getSystemInfo() const {
+    QString info;
+    
+    QFile versionFile("/proc/version");
+    if (versionFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QString content = QString::fromUtf8(versionFile.readAll());
+        QRegularExpression re("Linux version ([^ ]+)");
+        QRegularExpressionMatch match = re.match(content);
+        if (match.hasMatch()) {
+            info = QStringLiteral("Kernel ") + match.captured(1);
+        }
+    }
+    
+    return info.isEmpty() ? QStringLiteral("Unknown System") : info;
+}
+
+PerformanceMonitor::LatencyStats PerformanceMonitor::calculateLatencyStats(const QVector<FrameTimings>& history) const {
+    LatencyStats stats;
+    if (history.isEmpty()) {
+        return stats;
+    }
+    
+    QVector<double> latencies;
+    latencies.reserve(history.size());
+    
+    double sum = 0.0;
+    stats.minUs = std::numeric_limits<double>::max();
+    stats.maxUs = std::numeric_limits<double>::lowest();
+    
+    for (const auto& frame : history) {
+        if (frame.totalLatencyUs > 0) {
+            double latency = static_cast<double>(frame.totalLatencyUs);
+            latencies.append(latency);
+            sum += latency;
+            stats.minUs = std::min(stats.minUs, latency);
+            stats.maxUs = std::max(stats.maxUs, latency);
+        }
+    }
+    
+    if (latencies.isEmpty()) {
+        stats.minUs = 0.0;
+        stats.maxUs = 0.0;
+        return stats;
+    }
+    
+    stats.avgUs = sum / latencies.size();
+    
+    std::sort(latencies.begin(), latencies.end());
+    const int size = latencies.size();
+    
+    auto percentile = [&latencies, size](double p) -> double {
+        const double index = (p / 100.0) * (size - 1);
+        const int lower = static_cast<int>(std::floor(index));
+        const int upper = static_cast<int>(std::ceil(index));
+        
+        if (lower == upper) {
+            return latencies[lower];
+        }
+        
+        const double fraction = index - lower;
+        return latencies[lower] * (1.0 - fraction) + latencies[upper] * fraction;
+    };
+    
+    stats.p50Us = percentile(50.0);
+    stats.p95Us = percentile(95.0);
+    stats.p99Us = percentile(99.0);
+    
+    return stats;
 }

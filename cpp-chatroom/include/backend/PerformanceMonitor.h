@@ -86,6 +86,10 @@ public:
 
     void requestProfiling();
     void submitNpuPerfDetail(const QString& report);
+    
+    // Performance snapshot functionality
+    QString captureSnapshot(const QString& baseDirectory = QString());
+    void triggerNpuProfiling(int numInferences = 5);
 
 signals:
     void frameMetricsUpdated(const PerformanceMonitor::FrameTimings& latest,
@@ -128,6 +132,20 @@ private:
 
     static double ticksToPercent(quint64 deltaTicks, quint64 deltaTotalTicks);
     void ensureNpuStaticInfo();
+    
+    // Snapshot helper methods
+    QString generateSnapshotContent() const;
+    QString getVersionInfo() const;
+    QString getSystemInfo() const;
+    struct LatencyStats {
+        double avgUs;
+        double minUs;
+        double maxUs;
+        double p50Us;
+        double p95Us;
+        double p99Us;
+    };
+    LatencyStats calculateLatencyStats(const QVector<FrameTimings>& history) const;
 
     QTimer m_resourceTimer;
     mutable QMutex m_mutex;
@@ -144,6 +162,10 @@ private:
     quint64 m_lastProcessTicks;
     quint64 m_lastTotalTicks;
     quint64 m_lastActiveTicks;
+    
+    // NPU profiling reports storage
+    QVector<QString> m_npuPerfReports;
+   int m_pendingProfilingInferences;
 };
 
 #endif // PERFORMANCE_MONITOR_H

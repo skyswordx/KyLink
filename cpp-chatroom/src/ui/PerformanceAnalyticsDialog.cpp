@@ -3,10 +3,12 @@
 #include "backend/PerformanceMonitor.h"
 
 #include <QAbstractItemView>
+#include <QDir>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTextEdit>
@@ -231,6 +233,33 @@ void PerformanceAnalyticsDialog::initializeUi() {
         analyzeNpuBtn->setEnabled(true);
         analyzeNpuBtn->setText(tr("分析算子详情 (耗时较长)"));
         npuPerfText->setText(report);
+    });
+
+    // Performance Snapshot Button
+    auto* captureSnapshotBtn = new QPushButton(tr("捕获性能快照 (含5次NPU分析)"), resourceGroup);
+    resourceLayout->addWidget(captureSnapshotBtn, row++, 0, 1, 2);
+    
+    connect(captureSnapshotBtn, &QPushButton::clicked, [this, captureSnapshotBtn]() {
+        captureSnapshotBtn->setEnabled(false);
+        captureSnapshotBtn->setText(tr("正在收集性能数据..."));
+        
+        // Trigger NPU profiling for 5 inferences
+        PerformanceMonitor::instance()->triggerNpuProfiling(5);
+        
+        QTimer::singleShot(15000, this, [](){ });
+        QTimer::singleShot(16000, this, [this, captureSnapshotBtn]() {
+            const QString path = PerformanceMonitor::instance()->captureSnapshot();
+            captureSnapshotBtn->setEnabled(true);
+            captureSnapshotBtn->setText(tr("捕获性能快照 (含5次NPU分析)"));
+            
+            if (!path.isEmpty()) {
+                QMessageBox::information(this, tr("快照成功"),
+                    tr("性能快照已保存至:\n%1").arg(path));
+            } else {
+                QMessageBox::warning(this, tr("快照失败"),
+                    tr("无法保存性能快照文件，请检查文件权限。"));
+            }
+        });
     });
 
     resourceLayout->addWidget(new QLabel(tr("GPU 利用率:"), resourceGroup), row, 0);
