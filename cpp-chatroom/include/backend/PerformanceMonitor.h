@@ -31,6 +31,17 @@ struct NpuMemoryUsage {
     QString detail;
 };
 
+struct VpuInfo {
+    bool available = false;
+    QString mppVersion;
+    QString jpegDecoderStatus;
+    QString videoDecoderStatus;
+    quint64 jpegSessionBuffers = 0;
+    quint64 videoTaskCount = 0;
+    quint64 videoSessionBuffers = 0;
+    QString detail;
+};
+
 class PerformanceMonitor final : public QObject {
     Q_OBJECT
 
@@ -65,6 +76,7 @@ public:
         QString npuVoltage;
         QString npuDriverVersion;
         QString npuStaticDetail;
+        VpuInfo vpuInfo;  // VPU/MPP information
     };
 
     static PerformanceMonitor* instance();

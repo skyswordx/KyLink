@@ -644,6 +644,62 @@ void PerformanceMonitor::sampleResourceUsage() {
         snapshot.npuStaticDetail = m_npuStaticInfo.detail;
     }
 
+    // VPU/MPP information
+    {
+        VpuInfo vpuInfo;
+        QStringList errors;
+        
+        // Read MPP version
+        QByteArray versionContent;
+        if (readFileContent(QStringLiteral("/proc/mpp_service/version"), &versionContent)) {
+            QString version = QString::fromUtf8(versionContent).trimmed();
+            // Extract commit hash and author from version string
+            if (version.contains("author:")) {
+                vpuInfo.mppVersion = version.left(100);  // Limit length
+            } else {
+                vpuInfo.mppVersion = version;
+            }
+        }
+        
+        // Read JPEG decoder info (used for camera preview)
+        QByteArray jpegBuffers;
+        if (readFileContent(QStringLiteral("/proc/mpp_service/jpegd/session_buffers"), &jpegBuffers)) {
+            bool ok = false;
+            quint64 buffers = QString::fromUtf8(jpegBuffers).trimmed().toULongLong(&ok);
+            if (ok) {
+                vpuInfo.jpegSessionBuffers = buffers;
+                vpuInfo.jpegDecoderStatus = (buffers > 0) ? tr("活跃 (%1 buffers)").arg(buffers) : tr("空闲");
+            }
+        }
+        
+        // Read video decoder info
+        QByteArray videoTasks;
+        QByteArray videoBuffers;
+        if (readFileContent(QStringLiteral("/proc/mpp_service/rkvdec0/task_count"), &videoTasks)) {
+            bool ok = false;
+            quint64 tasks = QString::fromUtf8(videoTasks).trimmed().toULongLong(&ok);
+            if (ok) {
+                vpuInfo.videoTaskCount = tasks;
+            }
+        }
+        if (readFileContent(QStringLiteral("/proc/mpp_service/rkvdec0/session_buffers"), &videoBuffers)) {
+            bool ok = false;
+            quint64 buffers = QString::fromUtf8(videoBuffers).trimmed().toULongLong(&ok);
+            if (ok) {
+                vpuInfo.videoSessionBuffers = buffers;
+                vpuInfo.videoDecoderStatus = (buffers > 0) ? tr("活跃 (%1 buffers)").arg(buffers) : tr("空闲");
+            }
+        }
+        
+        // Determine availability
+        vpuInfo.available = !vpuInfo.mppVersion.isEmpty();
+        if (!vpuInfo.available) {
+            vpuInfo.detail = tr("未能读取 /proc/mpp_service 信息");
+        }
+        
+        snapshot.vpuInfo = vpuInfo;
+    }
+
     {
         QMutexLocker locker(&m_mutex);
         m_latestResources = snapshot;
@@ -806,115 +862,131 @@ QString PerformanceMonitor::generateSnapshotContent() const {
     const QVector<FrameTimings> frames = recentFrameHistory(5);
     
     out << "================================================================================\n";
-    out << "性能快照报告\n";
+    out << "Performance Snapshot Report\n";
     out << "================================================================================\n";
-    out << "快照时间: " << QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) << "\n";
-    out << "程序版本: " << getVersionInfo() << "\n";
-    out << "系统信息: " << getSystemInfo() << "\n";
+    out << "Timestamp:    " << QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) << "\n";
+    out << "Version:      " << getVersionInfo() << "\n";
+    out << "System Info:  " << getSystemInfo() << "\n";
     out << "================================================================================\n\n";
     
-    out << "[系统资源占用]\n";
-    out << QString("进程 CPU:     %1%\n").arg(resources.processCpuPercent, 0, 'f', 1);
-    out << QString("系统 CPU:     %1%\n").arg(resources.totalCpuPercent, 0, 'f', 1);
-    out << QString("进程内存:     %1 KB (%2 MB)\n")
+    out << "[System Resource Usage]\n";
+    out << QString("Process CPU:       %1%\n").arg(resources.processCpuPercent, 0, 'f', 1);
+    out << QString("System CPU:        %1%\n").arg(resources.totalCpuPercent, 0, 'f', 1);
+    out << QString("Process Memory:    %1 KB (%2 MB)\n")
         .arg(resources.processMemoryKb)
         .arg(resources.processMemoryKb / 1024.0, 0, 'f', 1);
-    out << QString("系统可用内存: %1 KB (%2 MB)\n\n")
+    out << QString("System Avail Mem:  %1 KB (%2 MB)\n\n")
         .arg(resources.systemAvailableMemoryKb)
         .arg(resources.systemAvailableMemoryKb / 1024.0, 0, 'f', 1);
     
-    out << "[NPU 信息]\n";
+    out << "[NPU Information]\n";
     if (resources.npuLoad.available) {
-        out << QString("利用率:       %1%\n").arg(resources.npuLoad.value, 0, 'f', 1);
+        out << QString("Utilization:   %1%\n").arg(resources.npuLoad.value, 0, 'f', 1);
     } else {
-        out << QString("利用率:       不可用 (%1)\n").arg(resources.npuLoad.detail);
+        out << QString("Utilization:   N/A (%1)\n").arg(resources.npuLoad.detail);
     }
-    out << "频率:         " << (resources.npuFrequency.isEmpty() ? "N/A" : resources.npuFrequency) << "\n";
-    out << "电压:         " << (resources.npuVoltage.isEmpty() ? "N/A" : resources.npuVoltage) << "\n";
-    out << "功率状态:     " << (resources.npuPowerState.isEmpty() ? "N/A" : resources.npuPowerState) << "\n";
-    out << "延迟:         " << (resources.npuDelayMs.isEmpty() ? "N/A" : resources.npuDelayMs) << "\n";
-    out << "驱动版本:     " << (resources.npuDriverVersion.isEmpty() ? "N/A" : resources.npuDriverVersion) << "\n\n";
+    out << "Frequency:     " << (resources.npuFrequency.isEmpty() ? "N/A" : resources.npuFrequency) << "\n";
+    out << "Voltage:       " << (resources.npuVoltage.isEmpty() ? "N/A" : resources.npuVoltage) << "\n";
+    out << "Power State:   " << (resources.npuPowerState.isEmpty() ? "N/A" : resources.npuPowerState) << "\n";
+    out << "Delay:         " << (resources.npuDelayMs.isEmpty() ? "N/A" : resources.npuDelayMs) << "\n";
+    out << "Driver Ver:    " << (resources.npuDriverVersion.isEmpty() ? "N/A" : resources.npuDriverVersion) << "\n\n";
     
-    out << "[NPU 内存占用]\n";
+    out << "[NPU Memory Usage]\n";
     if (resources.npuMemory.available) {
-        out << QString("模型权重:     %1 KB (%2 MB)\n")
+        out << QString("Model Weights:      %1 KB (%2 MB)\n")
             .arg(resources.npuMemory.modelWeightsKb)
             .arg(resources.npuMemory.modelWeightsKb / 1024.0, 0, 'f', 1);
-        out << QString("内部缓冲区:   %1 KB (%2 MB)\n")
+        out << QString("Internal Buffers:   %1 KB (%2 MB)\n")
             .arg(resources.npuMemory.internalBuffersKb)
             .arg(resources.npuMemory.internalBuffersKb / 1024.0, 0, 'f', 1);
-        out << QString("DMA 分配:     %1 KB (%2 MB)\n")
+        out << QString("DMA Allocated:      %1 KB (%2 MB)\n")
             .arg(resources.npuMemory.dmaAllocatedKb)
             .arg(resources.npuMemory.dmaAllocatedKb / 1024.0, 0, 'f', 1);
-        out << QString("总 SRAM:      %1 KB (%2 MB)\n")
+        out << QString("Total SRAM:         %1 KB (%2 MB)\n")
             .arg(resources.npuMemory.totalSramKb)
             .arg(resources.npuMemory.totalSramKb / 1024.0, 0, 'f', 1);
-        out << QString("可用 SRAM:    %1 KB (%2 MB)\n\n")
+        out << QString("Available SRAM:     %1 KB (%2 MB)\n\n")
             .arg(resources.npuMemory.freeSramKb)
             .arg(resources.npuMemory.freeSramKb / 1024.0, 0, 'f', 1);
     } else {
-        out << QString("不可用: %1\n\n").arg(resources.npuMemory.detail);
+        out << QString("N/A: %1\n\n").arg(resources.npuMemory.detail);
     }
     
-    out << "[RGA 信息]\n";
+    out << "[RGA Information]\n";
     if (resources.rgaLoad.available) {
-        out << QString("利用率:       %1%\n").arg(resources.rgaLoad.value, 0, 'f', 1);
+        out << QString("Utilization:   %1%\n").arg(resources.rgaLoad.value, 0, 'f', 1);
         if (!resources.rgaCoreLoads.isEmpty()) {
-            out << "核心负载:\n";
+            out << "Core Loads:\n";
             for (const auto& pair : resources.rgaCoreLoads) {
                 out << QString("  %1: %2%\n").arg(pair.first).arg(pair.second, 0, 'f', 1);
             }
         }
     } else {
-        out << QString("利用率:       不可用 (%1)\n").arg(resources.rgaLoad.detail);
+        out << QString("Utilization:   N/A (%1)\n").arg(resources.rgaLoad.detail);
     }
-    out << "驱动版本:     " << (resources.rgaDriverVersion.isEmpty() ? "N/A" : resources.rgaDriverVersion) << "\n";
-    out << "硬件信息:     " << (resources.rgaHardwareInfo.isEmpty() ? "N/A" : resources.rgaHardwareInfo) << "\n\n";
+    out << "Driver Ver:    " << (resources.rgaDriverVersion.isEmpty() ? "N/A" : resources.rgaDriverVersion) << "\n";
+    out << "Hardware Info: " << (resources.rgaHardwareInfo.isEmpty() ? "N/A" : resources.rgaHardwareInfo) << "\n\n";
     
-    out << "[GPU 信息]\n";
+    out << "[GPU Information]\n";
     if (resources.gpuLoad.available) {
-        out << QString("利用率:       %1%\n\n").arg(resources.gpuLoad.value, 0, 'f', 1);
+        out << QString("Utilization:   %1%\n\n").arg(resources.gpuLoad.value, 0, 'f', 1);
     } else {
-        out << QString("利用率:       不可用 (%1)\n\n").arg(resources.gpuLoad.detail);
+        out << QString("Utilization:   N/A (%1)\n\n").arg(resources.gpuLoad.detail);
     }
     
-    out << "[VPU/MPP 信息]\n";
-    out << "状态:         待实现\n\n";
+    out << "[VPU/MPP Information]\n";
+    if (resources.vpuInfo.available) {
+        out << "MPP Version:   " << resources.vpuInfo.mppVersion << "\n";
+        out << "JPEG Decoder:  " << (resources.vpuInfo.jpegDecoderStatus.isEmpty() ? "N/A" : resources.vpuInfo.jpegDecoderStatus) << "\n";
+        if (resources.vpuInfo.jpegSessionBuffers > 0) {
+            out << QString("  Active Buffers: %1\n").arg(resources.vpuInfo.jpegSessionBuffers);
+        }
+        out << "Video Decoder: " << (resources.vpuInfo.videoDecoderStatus.isEmpty() ? "N/A" : resources.vpuInfo.videoDecoderStatus) << "\n";
+        if (resources.vpuInfo.videoTaskCount > 0) {
+            out << QString("  Task Count:     %1\n").arg(resources.vpuInfo.videoTaskCount);
+        }
+        if (resources.vpuInfo.videoSessionBuffers > 0) {
+            out << QString("  Active Buffers: %1\n").arg(resources.vpuInfo.videoSessionBuffers);
+        }
+    } else {
+        out << QString("Status:        N/A (%1)\n").arg(resources.vpuInfo.detail);
+    }
+    out << "\n";
     
-    out << "[帧处理性能 - 最近 5 帧]\n";
+    out << "[Frame Processing Performance - Recent 5 Frames]\n";
     out << "-------------------------\n";
     out << QString("%1 | %2 | %3 | %4 | %5 | %6 | %7\n")
-        .arg("帧ID", -6).arg("采集延迟(μs)", -13).arg("预处理(μs)", -11)
-        .arg("NPU(μs)", -8).arg("后处理(μs)", -11).arg("渲染(μs)", -9).arg("总延迟(μs)", -12);
+        .arg("FrameID", -8).arg("Capture(us)", -12).arg("Preproc(us)", -12)
+        .arg("NPU(us)", -9).arg("Postproc(us)", -13).arg("Render(us)", -11).arg("Total(us)", -10);
     out << QString("%1-|-%2-|-%3-|-%4-|-%5-|-%6-|-%7\n")
-        .arg(QString(6, '-')).arg(QString(13, '-')).arg(QString(11, '-'))
-        .arg(QString(8, '-')).arg(QString(11, '-')).arg(QString(9, '-')).arg(QString(12, '-'));
+        .arg(QString(8, '-')).arg(QString(12, '-')).arg(QString(12, '-'))
+        .arg(QString(9, '-')).arg(QString(13, '-')).arg(QString(11, '-')).arg(QString(10, '-'));
     
     for (const auto& frame : frames) {
         out << QString("%1 | %2 | %3 | %4 | %5 | %6 | %7\n")
-            .arg(frame.frameId, 6).arg(frame.captureToPreprocessUs, 13).arg(frame.preprocessUs, 11)
-            .arg(frame.npuUs, 8).arg(frame.postprocessUs, 11).arg(frame.renderUs, 9).arg(frame.totalLatencyUs, 12);
+            .arg(frame.frameId, 8).arg(frame.captureToPreprocessUs, 12).arg(frame.preprocessUs, 12)
+            .arg(frame.npuUs, 9).arg(frame.postprocessUs, 13).arg(frame.renderUs, 11).arg(frame.totalLatencyUs, 10);
     }
     out << "\n";
     
     if (!frames.isEmpty()) {
         const LatencyStats stats = calculateLatencyStats(frames);
-        out << "[延迟统计]\n";
-        out << QString("平均延迟: %1 μs (%2 ms)\n").arg(stats.avgUs, 0, 'f', 0).arg(stats.avgUs / 1000.0, 0, 'f', 1);
-        out << QString("最小延迟: %1 μs (%2 ms)\n").arg(stats.minUs, 0, 'f', 0).arg(stats.minUs / 1000.0, 0, 'f', 1);
-        out << QString("最大延迟: %1 μs (%2 ms)\n").arg(stats.maxUs, 0, 'f', 0).arg(stats.maxUs / 1000.0, 0, 'f', 1);
-        out << QString("P50 延迟: %1 μs (%2 ms)\n").arg(stats.p50Us, 0, 'f', 0).arg(stats.p50Us / 1000.0, 0, 'f', 1);
-        out << QString("P95 延迟: %1 μs (%2 ms)\n").arg(stats.p95Us, 0, 'f', 0).arg(stats.p95Us / 1000.0, 0, 'f', 1);
-        out << QString("P99 延迟: %1 μs (%2 ms)\n\n").arg(stats.p99Us, 0, 'f', 0).arg(stats.p99Us / 1000.0, 0, 'f', 1);
+        out << "[Latency Statistics]\n";
+        out << QString("Average:  %1 us (%2 ms)\n").arg(stats.avgUs, 0, 'f', 0).arg(stats.avgUs / 1000.0, 0, 'f', 1);
+        out << QString("Min:      %1 us (%2 ms)\n").arg(stats.minUs, 0, 'f', 0).arg(stats.minUs / 1000.0, 0, 'f', 1);
+        out << QString("Max:      %1 us (%2 ms)\n").arg(stats.maxUs, 0, 'f', 0).arg(stats.maxUs / 1000.0, 0, 'f', 1);
+        out << QString("P50:      %1 us (%2 ms)\n").arg(stats.p50Us, 0, 'f', 0).arg(stats.p50Us / 1000.0, 0, 'f', 1);
+        out << QString("P95:      %1 us (%2 ms)\n").arg(stats.p95Us, 0, 'f', 0).arg(stats.p95Us / 1000.0, 0, 'f', 1);
+        out << QString("P99:      %1 us (%2 ms)\n\n").arg(stats.p99Us, 0, 'f', 0).arg(stats.p99Us / 1000.0, 0, 'f', 1);
     }
     
     {
         QMutexLocker locker(&m_npuMutex);
         if (!m_npuPerfReports.isEmpty()) {
-            out << "[NPU 算子级性能分析 - " << m_npuPerfReports.size() << " 次推理]\n";
+            out << "[NPU Operator-Level Performance Analysis - " << m_npuPerfReports.size() << " Inferences]\n";
             out << "================================================================================\n";
             for (int i = 0; i < m_npuPerfReports.size(); ++i) {
-                out << "\n推理 #" << (i + 1) << ":\n" << m_npuPerfReports.at(i) << "\n";
+                out << "\nInference #" << (i + 1) << ":\n" << m_npuPerfReports.at(i) << "\n";
                 if (i < m_npuPerfReports.size() - 1) {
                     out << "--------------------------------------------------------------------------------\n";
                 }
@@ -924,7 +996,7 @@ QString PerformanceMonitor::generateSnapshotContent() const {
     }
     
     out << "================================================================================\n";
-    out << "快照结束\n";
+    out << "Snapshot End\n";
     out << "================================================================================\n";
     
     return content;
